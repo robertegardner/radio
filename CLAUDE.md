@@ -23,17 +23,18 @@ pulls go live immediately).
 
 | File | What it does |
 |------|--------------|
-| `stream.sh` | Bash wrapper around `rtl_fm` / `redsea` / `ffmpeg`. Reads `/etc/sdr-streams/active.env` to know what to tune and how. Branches FM (with RDS) vs AM. |
+| `stream.sh` | Bash wrapper around `rtl_fm` / `redsea` / `ffmpeg`. Reads `/etc/sdr-streams/active.env`. Branches: `hd` → `hd_stream.py`; `wbfm`/`fm` → rtl_fm + redsea + ffmpeg; AM/other → rtl_fm + ffmpeg. |
+| `hd_stream.py` | HD Radio pipeline. Starts nrsc5, waits up to 15 s for audio lock. Lock: bridges nrsc5 → ffmpeg → Icecast. No lock: writes `hd_status.json` and exec's into analog FM+RDS fallback. Never crash-loops. |
 | `rds_watcher.py` | Reads JSON from `redsea` on stdin, parses station name + artist/title from the unstructured RT field, writes `/run/sdr-streams/now_playing.json`. Knows several RT formats (Artist - Title, "Artist with Title on STATION", etc.) |
 | `fm_scan.py` | rtl_power band sweep of 87.9–108.1 MHz, identifies stations above noise floor, optionally probes each one for RDS PS name. Writes `/var/lib/sdr-streams/stations.json`. |
 | `am_scan.py` | Walks the AM band (540–1700 kHz) with rtl_fm one channel at a time using direct-sampling mode (-E direct2). Slower than rtl_power but actually works on cheap dongles. Writes `stations_am.json`. |
-| `app.py` | Flask app on port 8080. Two UIs (admin at `/`, stereo at `/radio`) plus JSON APIs. |
+| `app.py` | Flask app on port 8080. Two UIs (admin at `/`, stereo at `/radio`) plus JSON APIs. `write_env` / `current_tune` / tune endpoints all carry `hd` + `subchannel` fields. `/api/now_playing` exposes `hd_probing`, `hd_locked`, `hd_unavailable` from `hd_status.json`. |
 | `caption_orchestrator.py` | Decodes Icecast audio back to PCM, sends 6s chunks to Whisper for captions, fingerprints with Chromaprint/AcoustID for lyrics, looks up synced lyrics on LRClib. Writes `/run/sdr-streams/captions.json`. |
-| `station_db.py` | Lookup helper: maps frequencies to call signs/cities by consulting `fcc.json` and `overrides.json`. |
+| `station_db.py` | Lookup helper: maps frequencies to call signs/cities by consulting `fcc.json` and `overrides.json`. `hd_subchannels(mhz)` returns known HD program indices from `hd_programs` in the station record. |
 | `fcc_fetch.py` | Currently fetches from RadioBrowser (community-curated internet-radio catalog). Quality is poor — see "Known issues" below. |
 | `ui_settings.py` | Persists user-configurable UI settings (stream URL, site title) to `/etc/sdr-streams/ui.json`. |
-| `templates/index.html` | Admin/control UI: stations table, scan buttons, settings, RDS now-playing, captions/lyrics view. |
-| `templates/radio.html` | Stereo-style UI: amber-LCD frequency display, 12 favorites (localStorage), seek/scan, browser audio playback. |
+| `templates/index.html` | Admin/control UI: stations table, scan buttons, settings, RDS now-playing, captions/lyrics view. Playing pill shows "HD1/HD2" suffix when in HD mode. FM rows show "HD1" tune button for stations with known `hd_programs`. |
+| `templates/radio.html` | Stereo-style UI: amber-LCD frequency display, HD LED + subchannel badge, HD toggle button, HD1–HD4 subchannel selector row, HD rows in station modal, 12 favorites (localStorage, HD-aware), seek/scan, browser audio playback. Handles `hd_probing` / `hd_locked` / `hd_unavailable` state from the API. |
 
 The systemd units in `files/etc/systemd/system/` are:
 
@@ -45,10 +46,10 @@ The systemd units in `files/etc/systemd/system/` are:
 Config files in `files/etc/sdr-streams/` are `.example` files (real ones are
 on the Pi, not in git):
 
-- `active.env` — current tune; written by Flask on every `/tune`
+- `active.env` — current tune; written by Flask on every `/tune`. Fields: `MODE` (`wbfm`, `am`, `hd`), `FREQ`, `SAMP`, `GAIN`, `BITRATE`, `MOUNT`, `EXTRA_FLAGS`, `ICECAST_PASS`. HD mode also adds `SUBCHANNEL=N` (0-indexed).
 - `tuner.env` — Flask config (just Icecast password)
 - `captions.env` — Whisper URL, AcoustID key, lyric offsets
-- `overrides.json` — hand-curated station call-sign/city overrides
+- `overrides.json` — hand-curated station overrides. FM entries can include `"hd_programs": [0, 1]` to declare known HD subchannels (0-indexed), which surfaces HD rows in the station browser and the "HD1" tune button in admin.
 - `ui.json` — user-configurable UI settings (created on first save in admin)
 
 ## Design conventions
@@ -63,23 +64,35 @@ on the Pi, not in git):
 
 ## How the streaming pipeline works
 
+**Analog FM (MODE=wbfm):**
 ```
-RTL-SDR dongle (USB)
+RTL-SDR dongle
     ↓
-rtl_fm (FM: 171kHz IQ for RDS subcarrier; AM: 12kHz direct-sampling)
+rtl_fm (171kHz IQ — wide enough for 57kHz RDS subcarrier)
     ↓
-tee (FM only)
+tee
   ├── redsea ──→ rds_watcher.py ──→ /run/sdr-streams/now_playing.json
   ↓                                          ↓
 ffmpeg (de-emphasis, lowpass,            caption_orchestrator
         MP3 encode)                       (separate service, reads Icecast)
     ↓                                          ↓
-Icecast (http://localhost:8000/fm.mp3)   /run/sdr-streams/captions.json
+Icecast :8000/fm.mp3                /run/sdr-streams/captions.json
     ↓
-NPMplus reverse proxy → https://icecast.rg2.io/fm.mp3
-    ↓
-Browser <audio> element in radio.html
+NPMplus → https://icecast.rg2.io/fm.mp3 → Browser <audio>
 ```
+
+**HD Radio (MODE=hd):**
+```
+RTL-SDR dongle
+    ↓
+nrsc5 (2 MHz IQ, OFDM decode, AAC decode → WAV to stdout)
+  [hd_stream.py waits up to 15s for first byte — no byte = fall back to analog FM]
+    ↓
+ffmpeg (WAV → MP3 encode)
+    ↓
+Icecast :8000/fm.mp3 → Browser <audio>
+```
+hd_stream.py writes `/run/sdr-streams/hd_status.json` (`hd_probing` → `hd_locked` or `hd_unavailable`). The radio UI polls this and shows the state or reverts to analog automatically.
 
 The Flask app on port 8080 serves both UIs and the JSON APIs. The radio UI
 polls `/api/now_playing` every ~1s for current RDS/captions/lyrics, and
@@ -118,7 +131,7 @@ sudo journalctl -u sdr-tuner -u sdr-fm@active -u sdr-captions -f
 # Reload code after editing
 sudo systemctl restart sdr-tuner
 
-# Restart streaming pipeline (e.g. after stream.sh changes)
+# Restart streaming pipeline (e.g. after stream.sh / hd_stream.py changes)
 sudo systemctl restart sdr-fm@active
 
 # Re-scan FM band (also runnable from admin UI)
@@ -127,6 +140,11 @@ sudo systemctl start sdr-scan
 # Check current state
 cat /run/sdr-streams/now_playing.json | jq
 cat /run/sdr-streams/captions.json | jq
+cat /run/sdr-streams/hd_status.json | jq   # hd_probing / hd_locked / hd_unavailable
+
+# Probe a frequency for HD Radio (dongle must be free)
+sudo systemctl stop sdr-fm@active
+timeout 20 nrsc5 -d 0 -g 49.6 -o /dev/null 100.7 0   # "Synchronized" = HD present
 
 # Fresh station database fetch
 sudo -u radio python3 /opt/sdr-tuner/fcc_fetch.py --lat 37.31 --lon -89.55 --max-km 400
@@ -171,12 +189,16 @@ from the Pi.
 
 ### Planned features
 
-- **HD Radio (IBOC) support** via `nrsc5`. Design agreed: per-station
-  toggle (one dongle), subchannels (HD1/HD2/HD3/HD4) as first-class
-  tunable stations. New `MODE=hdfm` in `active.env` plus a `HD_PROGRAM`
-  field. New `hd_watcher.py` parallel to `rds_watcher.py`. HD presence
-  detection added to scan results. Unknowns include Pi 5 CPU load and
-  whether the FM whip antenna is strong enough to decode HD at our QTH.
+- **HD Radio PAD metadata.** nrsc5 logs station name, artist, and title
+  to stderr as it decodes. Capturing this (via a pipe on stderr) and
+  writing it to `now_playing.json` would give the radio UI track info
+  on HD channels without relying on RDS. Would need an `hd_watcher.py`
+  parallel to `rds_watcher.py`.
+
+- **HD station auto-detection during FM scan.** After `fm_scan.py`
+  identifies a station, probe it with nrsc5 for a few seconds. If it
+  locks, add `hd_programs: [0]` (or more) to the scan result. This
+  removes the need for manual `overrides.json` entries for HD stations.
 
 - **NPMplus auth on admin endpoints.** The `/radio`, `/api/now_playing`,
   and `/api/stations` routes are public-safe. Everything else (`/`,
@@ -204,19 +226,23 @@ from the Pi.
 
 ## When making changes
 
-1. The Pi at `/srv/radio` is a symlink-mounted git checkout. **Edits are
-   live the moment the relevant service restarts.** No bootstrap re-run
-   needed unless `bootstrap.sh` or systemd unit files changed.
-2. After editing Python in `/opt/sdr-tuner/`: `sudo systemctl restart sdr-tuner`
-   (for app.py) or `sudo systemctl restart sdr-captions` (for caption_orchestrator.py).
-3. After editing HTML templates: `sudo systemctl restart sdr-tuner` and
-   hard-refresh the browser (Ctrl+Shift+R).
-4. After editing `stream.sh`: `sudo systemctl restart sdr-fm@active`.
-5. After editing systemd units: `sudo systemctl daemon-reload` then restart
-   each affected service.
-6. **Test on the live deployment before committing.** This is a hobby
-   project, not a system with CI. The Pi is the test environment.
-7. Commit, push, done. The Pi pulls from the same git repo it runs from.
+Source lives in `/srv/radio/files/opt/sdr-tuner/`. The installed copy is
+`/opt/sdr-tuner/` (owned by `radio:radio`). They are **not** symlinked —
+use `deploy.sh` to push changes:
+
+```bash
+sudo /srv/radio/deploy.sh   # copies changed files + restarts both services
+```
+
+For surgical restarts after deploy:
+1. `app.py`, `station_db.py`, `ui_settings.py`, or templates → `sudo systemctl restart sdr-tuner` + hard-refresh browser (Ctrl+Shift+R)
+2. `stream.sh` or `hd_stream.py` → `sudo systemctl restart sdr-fm@active`
+3. `caption_orchestrator.py` → `sudo systemctl restart sdr-captions`
+4. systemd unit files → `sudo systemctl daemon-reload` then restart each affected service
+5. `bootstrap.sh` changes (new deps, new units) → re-run `sudo ./bootstrap.sh`
+
+**Test on the live deployment before committing.** This is a hobby project,
+not a system with CI. The Pi is the test environment.
 
 ## What's not in git (ignored)
 
@@ -224,7 +250,7 @@ Anything user-specific or secret:
 
 - `*.env` files (real configs with passwords)
 - `fcc.json`, `stations.json`, `stations_am.json` (regenerable)
-- `now_playing.json`, `captions.json` (transient state)
+- `now_playing.json`, `captions.json`, `hd_status.json` (transient state)
 - `overrides.json` (per-user curation)
 - `ui.json` (per-deployment settings)
 - `.token` (Whisper auth secret)
