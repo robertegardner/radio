@@ -1,0 +1,11 @@
+{
+  "_comment": "Hand-curated station overrides. Takes precedence over fcc.json. Edit and apply via the 'Reload DB' button in the admin UI.",
+  "fm": {
+    "100.7": {"call": "KGMO",  "city": "Cape Girardeau", "state": "MO"},
+    "91.1":  {"call": "KRCU",  "city": "Cape Girardeau", "state": "MO"}
+  },
+  "am": {
+    "960":   {"call": "KSIM",  "city": "Sikeston",       "state": "MO"},
+    "1240":  {"call": "KZIM",  "city": "Cape Girardeau", "state": "MO"}
+  }
+}

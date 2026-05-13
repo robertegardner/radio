@@ -1,0 +1,23 @@
+[Unit]
+Description=SDR caption + lyrics orchestrator
+After=network-online.target icecast2.service sdr-fm@active.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radio
+EnvironmentFile=/etc/sdr-streams/captions.env
+RuntimeDirectory=sdr-streams
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 /opt/sdr-tuner/caption_orchestrator.py
+Restart=always
+RestartSec=5
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/run/sdr-streams
+
+[Install]
+WantedBy=multi-user.target

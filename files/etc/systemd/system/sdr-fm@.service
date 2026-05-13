@@ -1,0 +1,21 @@
+[Unit]
+Description=SDR FM stream %i
+After=network-online.target icecast2.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radio
+EnvironmentFile=/etc/sdr-streams/%i.env
+RuntimeDirectory=sdr-streams
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/sdr-tuner/stream.sh
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=5
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

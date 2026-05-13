@@ -1,0 +1,691 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>{{ site_title }}</title>
+<style>
+  :root {
+    --bg-deep:   #0a0a0c;
+    --bg-panel:  #15161a;
+    --bg-raise:  #1f2126;
+    --bg-button: #2a2d33;
+    --bg-button-hover: #353941;
+    --line:      #2c2e34;
+    --amber:     #ffae3a;
+    --amber-dim: #6b4818;
+    --green:     #6df09b;
+    --red:       #f06d6d;
+    --text:      #e6e6e6;
+    --text-dim:  #888;
+    --text-faint:#555;
+    --accent:    #2563eb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%;
+    background: radial-gradient(circle at 50% -20%, #1a1c22 0%, var(--bg-deep) 70%);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+  }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 1rem;
+    user-select: none;
+  }
+  .stereo {
+    width: 100%; max-width: 600px;
+    background: linear-gradient(180deg, #1a1c22 0%, var(--bg-panel) 100%);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5),
+                inset 0 1px 0 rgba(255,255,255,.04);
+    padding: 1.25rem;
+    display: flex; flex-direction: column; gap: 1rem;
+  }
+
+  .lcd {
+    background: linear-gradient(180deg, #0d0e10 0%, #16181c 100%);
+    border: 1px solid #000;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    box-shadow: inset 0 2px 8px rgba(0,0,0,.7);
+    position: relative;
+    min-height: 130px;
+  }
+  .lcd-row { display: flex; justify-content: space-between; align-items: baseline; }
+  .lcd-band {
+    color: var(--amber);
+    font-family: 'Courier New', monospace;
+    font-size: .85rem;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-shadow: 0 0 8px var(--amber);
+  }
+  .lcd-band .other { color: var(--amber-dim); margin-left: .4rem; text-shadow: none; }
+  .lcd-status {
+    display: flex; gap: .65rem; align-items: center;
+    font-size: .7rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: .1em;
+  }
+  .led {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #333;
+    transition: background .15s, box-shadow .15s;
+  }
+  .led.on  { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .led.err { background: var(--red);   box-shadow: 0 0 8px var(--red); }
+
+  .lcd-freq {
+    color: var(--amber);
+    font-family: 'Courier New', monospace;
+    font-weight: 700;
+    font-size: 4rem;
+    letter-spacing: .04em;
+    line-height: 1;
+    margin: .5rem 0 .25rem;
+    text-shadow: 0 0 12px rgba(255,174,58,.6);
+    font-variant-numeric: tabular-nums;
+  }
+  .lcd-freq .unit {
+    font-size: 1rem; color: var(--amber-dim);
+    margin-left: .4rem; letter-spacing: .15em; vertical-align: middle;
+  }
+  .lcd-call {
+    color: var(--text); font-size: 1.05rem; font-weight: 500;
+    min-height: 1.4em;
+  }
+  .lcd-call .city { color: var(--text-dim); font-weight: 400; font-size: .85rem; }
+  .lcd-track {
+    color: #a8d0f0; font-size: .9rem;
+    margin-top: .25rem; min-height: 1.3em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .lcd-track:empty::before { content: "—"; color: var(--text-faint); }
+
+  .presets-label {
+    font-size: .65rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: .15em;
+    margin-bottom: .4rem; padding-left: .25rem;
+  }
+  .presets {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: .5rem;
+  }
+  .preset {
+    background: var(--bg-button);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: .55rem .25rem;
+    cursor: pointer;
+    text-align: center;
+    transition: all .12s;
+    overflow: hidden;
+  }
+  .preset:hover:not(:disabled) { background: var(--bg-button-hover); }
+  .preset.active { border-color: var(--amber); background: #2c2520; }
+  .preset.empty { opacity: .55; }
+  .preset .num {
+    display: block;
+    font-size: .65rem; color: var(--text-dim);
+    font-weight: 600;
+  }
+  .preset .label {
+    display: block; margin-top: .15rem;
+    font-size: .8rem; font-weight: 600; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .preset .freq {
+    display: block;
+    font-size: .65rem; color: var(--text-dim);
+    font-family: 'Courier New', monospace;
+  }
+  .preset.empty .label { color: var(--text-faint); font-weight: 400; font-style: italic; }
+  .preset.empty .freq { display: none; }
+
+  .controls {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: .75rem; align-items: center;
+  }
+  .ctrl-group { display: flex; gap: .4rem; }
+  .btn {
+    background: var(--bg-button);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+    padding: .6rem .85rem;
+    font-size: .85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all .12s;
+    display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
+    min-width: 44px; min-height: 40px;
+  }
+  .btn:hover:not(:disabled) { background: var(--bg-button-hover); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.danger  { background: #3a2424; border-color: #5a3434; }
+  .btn.toggle.on { background: var(--amber); color: #1a1208; border-color: var(--amber); }
+
+  .vol-wrap { display: flex; align-items: center; gap: .5rem; }
+  .vol-label { font-size: 1.1rem; color: var(--text-dim); }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 120px; height: 6px;
+    background: var(--bg-raise); border-radius: 3px;
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 18px; height: 18px;
+    background: var(--amber); border-radius: 50%; cursor: pointer;
+    box-shadow: 0 0 4px rgba(255,174,58,.5);
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 18px; height: 18px;
+    background: var(--amber); border-radius: 50%; cursor: pointer; border: 0;
+  }
+
+  .ticker {
+    margin-top: .25rem;
+    padding: .5rem .75rem;
+    background: var(--bg-raise);
+    border-radius: 6px;
+    font-size: .8rem;
+    color: var(--text-dim);
+    min-height: 1.4em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-style: italic;
+  }
+  .ticker.lyric { color: #e8b88a; font-style: normal; font-weight: 500; }
+  .ticker:empty { display: none; }
+
+  .modal-bg {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.7);
+    backdrop-filter: blur(4px);
+    display: none; align-items: center; justify-content: center;
+    padding: 1rem; z-index: 100;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: var(--bg-panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 1rem;
+    width: 100%; max-width: 480px;
+    max-height: 80vh;
+    display: flex; flex-direction: column;
+  }
+  .modal h3 { font-size: 1rem; margin-bottom: .75rem; color: var(--text); }
+  .modal-list {
+    overflow-y: auto;
+    flex: 1;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .modal-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: .65rem .85rem;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+    transition: background .1s;
+  }
+  .modal-row:hover { background: var(--bg-raise); }
+  .modal-row:last-child { border-bottom: 0; }
+  .modal-row .left { display: flex; flex-direction: column; gap: .15rem; }
+  .modal-row .freq {
+    font-family: 'Courier New', monospace;
+    color: var(--amber); font-weight: 600;
+  }
+  .modal-row .name { color: var(--text); font-size: .85rem; }
+  .modal-row .city { color: var(--text-dim); font-size: .75rem; }
+  .modal-row .snr { color: var(--text-dim); font-size: .75rem; font-family: 'Courier New', monospace; }
+  .modal-actions {
+    display: flex; justify-content: space-between; gap: .5rem;
+    margin-top: .75rem;
+  }
+  .modal-empty { padding: 2rem; text-align: center; color: var(--text-dim); }
+
+  .toast {
+    position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
+    background: var(--bg-button); color: var(--text);
+    padding: .6rem 1rem; border-radius: 6px;
+    border: 1px solid var(--line);
+    font-size: .85rem;
+    opacity: 0; transition: opacity .25s;
+    pointer-events: none;
+    z-index: 200;
+  }
+  .toast.show { opacity: 1; }
+
+  .footer {
+    margin-top: .5rem;
+    text-align: center;
+    font-size: .7rem; color: var(--text-faint);
+  }
+  .footer a { color: var(--text-dim); text-decoration: none; }
+  .footer a:hover { color: var(--text-dim); text-decoration: underline; }
+
+  @media (max-width: 480px) {
+    .lcd-freq { font-size: 3rem; }
+    .presets { grid-template-columns: repeat(4, 1fr); }
+    input[type=range] { width: 80px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="stereo">
+  <div class="lcd">
+    <div class="lcd-row">
+      <div class="lcd-band">
+        <span id="band-fm">FM</span>
+        <span id="band-am" class="other">AM</span>
+      </div>
+      <div class="lcd-status">
+        <span><span class="led" id="rds-led"></span> RDS</span>
+        <span><span class="led" id="stream-led"></span> STREAM</span>
+      </div>
+    </div>
+
+    <div class="lcd-freq" id="freq-display">---.-<span class="unit" id="unit">MHz</span></div>
+
+    <div class="lcd-call" id="call-display">—</div>
+    <div class="lcd-track" id="track-display"></div>
+  </div>
+
+  <div>
+    <div class="presets-label">Presets — tap to tune, long-press to save current station</div>
+    <div class="presets" id="presets"></div>
+  </div>
+
+  <div class="ticker" id="ticker"></div>
+
+  <div class="controls">
+    <div class="ctrl-group">
+      <button class="btn toggle" id="band-toggle" title="Switch band">FM</button>
+      <button class="btn" id="seek-down" title="Previous station">«</button>
+      <button class="btn" id="seek-up" title="Next station">»</button>
+      <button class="btn" id="stations-btn" title="Browse stations">≡</button>
+    </div>
+    <div></div>
+    <div class="ctrl-group">
+      <button class="btn primary" id="play-btn" title="Play/Pause">▶</button>
+      <div class="vol-wrap">
+        <span class="vol-label" id="vol-icon">🔊</span>
+        <input type="range" id="vol" min="0" max="100" value="80">
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <a href="/">admin</a>
+  </div>
+</div>
+
+<audio id="audio" preload="none"></audio>
+
+<div class="modal-bg" id="stations-modal">
+  <div class="modal">
+    <h3 id="modal-title">Stations</h3>
+    <div class="modal-list" id="modal-list"></div>
+    <div class="modal-actions">
+      <button class="btn" data-modal-band="fm">FM</button>
+      <button class="btn" data-modal-band="am">AM</button>
+      <button class="btn" id="modal-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+// Server-rendered: configurable in admin UI > Settings.
+const STREAM_URL = {{ stream_url|tojson }};
+
+const NUM_PRESETS = 12;
+const LS_PRESETS  = 'sdr-radio.presets.v1';
+const LS_VOL      = 'sdr-radio.vol';
+const LS_BAND     = 'sdr-radio.band';
+
+const $ = id => document.getElementById(id);
+const audio = $('audio');
+
+let stations = { fm: [], am: [] };
+let currentBand = localStorage.getItem(LS_BAND) || 'fm';
+let currentFreq = null;
+let presets = loadPresets();
+let isPlaying = false;
+let modalBand = 'fm';
+
+function loadPresets() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_PRESETS) || '[]');
+    if (Array.isArray(raw)) {
+      const out = raw.slice(0, NUM_PRESETS);
+      while (out.length < NUM_PRESETS) out.push(null);
+      return out;
+    }
+  } catch (e) {}
+  return new Array(NUM_PRESETS).fill(null);
+}
+function savePresets() {
+  localStorage.setItem(LS_PRESETS, JSON.stringify(presets));
+}
+
+function renderPresets() {
+  const grid = $('presets');
+  grid.innerHTML = '';
+  presets.forEach((p, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'preset' + (p ? '' : ' empty');
+    if (p && currentFreq && p.band === currentBand && p.freq === currentFreq) {
+      btn.classList.add('active');
+    }
+    btn.innerHTML = `
+      <span class="num">${i + 1}</span>
+      <span class="label">${p ? (p.label || (p.band.toUpperCase() + ' ' + p.freq)) : 'empty'}</span>
+      <span class="freq">${p ? formatFreq(p.freq, p.band) : ''}</span>
+    `;
+    btn.addEventListener('click', () => {
+      if (btn.dataset.suppressClick) { delete btn.dataset.suppressClick; return; }
+      if (p) tuneTo(p.freq, p.band);
+      else   savePresetSlot(i);
+    });
+    btn.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      savePresetSlot(i);
+    });
+    let lpTimer;
+    const startLP = () => {
+      lpTimer = setTimeout(() => {
+        savePresetSlot(i);
+        btn.dataset.suppressClick = '1';
+      }, 700);
+    };
+    const cancelLP = () => clearTimeout(lpTimer);
+    btn.addEventListener('touchstart', startLP, {passive: true});
+    btn.addEventListener('touchend',   cancelLP);
+    btn.addEventListener('touchmove',  cancelLP);
+    btn.addEventListener('mousedown',  startLP);
+    btn.addEventListener('mouseup',    cancelLP);
+    btn.addEventListener('mouseleave', cancelLP);
+    grid.appendChild(btn);
+  });
+}
+
+function savePresetSlot(slot) {
+  if (!currentFreq) {
+    showToast('Tune to a station first');
+    return;
+  }
+  const list = stations[currentBand] || [];
+  const found = list.find(s => stationFreqStr(s, currentBand) === currentFreq);
+  const label = found && (found.call || found.ps)
+    ? (found.call || found.ps)
+    : (currentBand.toUpperCase() + ' ' + formatFreq(currentFreq, currentBand));
+  presets[slot] = { freq: currentFreq, band: currentBand, label };
+  savePresets();
+  renderPresets();
+  showToast(`Saved to preset ${slot + 1}: ${label}`);
+}
+
+function stationFreqStr(s, band) {
+  return band === 'fm'
+    ? Number(s.freq_mhz).toString()
+    : Number(s.freq_khz).toString();
+}
+function formatFreq(freq, band) {
+  if (!freq) return '';
+  return band === 'am' ? `${freq} kHz` : `${Number(freq).toFixed(1)} MHz`;
+}
+
+async function tuneTo(freq, band) {
+  showToast(`Tuning ${band.toUpperCase()} ${formatFreq(freq, band)}...`);
+  try {
+    const r = await fetch('/api/tune', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({freq, band}),
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'tune failed');
+    currentFreq = String(freq);
+    currentBand = band;
+    localStorage.setItem(LS_BAND, band);
+    updateBandUI();
+    renderPresets();
+    if (isPlaying) {
+      audio.pause();
+      setTimeout(() => playStream(), 1500);
+    }
+  } catch (e) {
+    showToast('Tune failed: ' + e.message);
+  }
+}
+
+function updateBandUI() {
+  $('band-fm').style.color = currentBand === 'fm' ? 'var(--amber)' : 'var(--amber-dim)';
+  $('band-fm').style.textShadow = currentBand === 'fm' ? '0 0 8px var(--amber)' : 'none';
+  $('band-am').style.color = currentBand === 'am' ? 'var(--amber)' : 'var(--amber-dim)';
+  $('band-am').style.textShadow = currentBand === 'am' ? '0 0 8px var(--amber)' : 'none';
+  $('band-toggle').textContent = currentBand.toUpperCase();
+  $('band-toggle').classList.toggle('on', currentBand === 'am');
+  $('unit').textContent = currentBand === 'am' ? 'kHz' : 'MHz';
+}
+
+function seek(direction) {
+  const list = (stations[currentBand] || []).slice();
+  if (!list.length) {
+    showToast(`No ${currentBand.toUpperCase()} stations — run a scan from admin page`);
+    return;
+  }
+  list.sort((a, b) => {
+    const fa = currentBand === 'fm' ? a.freq_mhz : a.freq_khz;
+    const fb = currentBand === 'fm' ? b.freq_mhz : b.freq_khz;
+    return fa - fb;
+  });
+  let idx = list.findIndex(s => stationFreqStr(s, currentBand) === currentFreq);
+  if (idx < 0) idx = direction > 0 ? -1 : list.length;
+  idx = (idx + direction + list.length) % list.length;
+  const s = list[idx];
+  tuneTo(stationFreqStr(s, currentBand), currentBand);
+}
+
+function playStream() {
+  if (!STREAM_URL) {
+    showToast('No stream URL configured. Visit admin > Settings.');
+    return;
+  }
+  // Cache-bust so we get a fresh connection after retune
+  const sep = STREAM_URL.includes('?') ? '&' : '?';
+  audio.src = STREAM_URL + sep + 't=' + Date.now();
+  audio.volume = $('vol').value / 100;
+  const p = audio.play();
+  if (p && p.catch) {
+    p.catch(err => {
+      isPlaying = false;
+      $('play-btn').textContent = '▶';
+      $('stream-led').classList.remove('on');
+      $('stream-led').classList.add('err');
+      showToast('Play failed: ' + err.message);
+    });
+  }
+  isPlaying = true;
+  $('play-btn').textContent = '⏸';
+  $('stream-led').classList.remove('err');
+  $('stream-led').classList.add('on');
+}
+function pauseStream() {
+  audio.pause();
+  audio.src = '';
+  isPlaying = false;
+  $('play-btn').textContent = '▶';
+  $('stream-led').classList.remove('on');
+}
+
+function openStationsModal(band) {
+  modalBand = band || currentBand;
+  renderStationsModal();
+  $('stations-modal').classList.add('show');
+}
+function renderStationsModal() {
+  $('modal-title').textContent = `${modalBand.toUpperCase()} stations`;
+  document.querySelectorAll('[data-modal-band]').forEach(b => {
+    b.classList.toggle('primary', b.dataset.modalBand === modalBand);
+  });
+  const list = (stations[modalBand] || []).slice().sort((a, b) => {
+    const fa = modalBand === 'fm' ? a.freq_mhz : a.freq_khz;
+    const fb = modalBand === 'fm' ? b.freq_mhz : b.freq_khz;
+    return fa - fb;
+  });
+  const target = $('modal-list');
+  target.innerHTML = '';
+  if (!list.length) {
+    target.innerHTML = `<div class="modal-empty">No stations for ${modalBand.toUpperCase()}.<br>Run a scan from the admin page.</div>`;
+    return;
+  }
+  list.forEach(s => {
+    const f = stationFreqStr(s, modalBand);
+    const row = document.createElement('div');
+    row.className = 'modal-row';
+    row.innerHTML = `
+      <div class="left">
+        <span class="freq">${formatFreq(f, modalBand)}</span>
+        <span class="name">${s.call || s.ps || '—'}</span>
+        ${s.city ? `<span class="city">${s.city}${s.state ? ', ' + s.state : ''}</span>` : ''}
+      </div>
+      <span class="snr">${s.snr_db != null ? s.snr_db + ' dB' : ''}</span>
+    `;
+    row.addEventListener('click', () => {
+      tuneTo(f, modalBand);
+      $('stations-modal').classList.remove('show');
+    });
+    target.appendChild(row);
+  });
+}
+
+async function pollNowPlaying() {
+  try {
+    const d = await (await fetch('/api/now_playing')).json();
+    if (d.freq && d.band) {
+      const changed = (d.freq !== currentFreq || d.band !== currentBand);
+      currentFreq = d.freq;
+      currentBand = d.band;
+      if (changed) {
+        updateBandUI();
+        renderPresets();
+      }
+    }
+    if (currentFreq) {
+      $('freq-display').innerHTML =
+        (currentBand === 'fm' ? Number(currentFreq).toFixed(1) : currentFreq)
+        + `<span class="unit">${currentBand === 'am' ? 'kHz' : 'MHz'}</span>`;
+    }
+    const rds = d.rds || {};
+    const fcc = d.fcc;
+    let label = '—', city = '';
+    if (rds.ps) {
+      label = rds.ps;
+      if (fcc && fcc.city) city = fcc.city + (fcc.state ? ', ' + fcc.state : '');
+    } else if (fcc && fcc.call) {
+      label = fcc.call;
+      if (fcc.city) city = fcc.city + (fcc.state ? ', ' + fcc.state : '');
+    } else if (currentBand === 'am') {
+      label = 'AM Broadcast';
+    }
+    $('call-display').innerHTML = label + (city ? ` <span class="city">· ${city}</span>` : '');
+    let track = '';
+    if (rds.artist || rds.title) {
+      track = [rds.artist, rds.title].filter(Boolean).join(' — ');
+    } else if (rds.rt) {
+      track = rds.rt;
+    }
+    $('track-display').textContent = track;
+    $('rds-led').classList.toggle('on', !!(rds.ps || rds.rt));
+    const ticker = $('ticker');
+    if (d.mode === 'lyrics' && d.lyrics?.lines?.length) {
+      const i = d.lyrics.index;
+      const line = (i >= 0 && d.lyrics.lines[i]) ? d.lyrics.lines[i].text : '';
+      ticker.className = 'ticker lyric';
+      ticker.textContent = line || '♪';
+    } else if (d.mode === 'captions' && d.caption?.text) {
+      ticker.className = 'ticker';
+      ticker.textContent = d.caption.text;
+    } else {
+      ticker.textContent = '';
+    }
+  } catch (e) {}
+}
+
+async function pollStations() {
+  try {
+    const d = await (await fetch('/api/stations')).json();
+    stations.fm = d.fm || [];
+    stations.am = d.am || [];
+  } catch (e) {}
+}
+
+let toastTimer;
+function showToast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+$('play-btn').addEventListener('click', () => {
+  if (isPlaying) pauseStream(); else playStream();
+});
+$('vol').addEventListener('input', e => {
+  audio.volume = e.target.value / 100;
+  localStorage.setItem(LS_VOL, e.target.value);
+  $('vol-icon').textContent = e.target.value == 0 ? '🔇'
+                            : e.target.value < 33 ? '🔈'
+                            : e.target.value < 66 ? '🔉' : '🔊';
+});
+$('band-toggle').addEventListener('click', () => {
+  const newBand = currentBand === 'fm' ? 'am' : 'fm';
+  const list = (stations[newBand] || []).slice();
+  if (list.length) {
+    list.sort((a, b) => (b.snr_db || 0) - (a.snr_db || 0));
+    tuneTo(stationFreqStr(list[0], newBand), newBand);
+  } else {
+    showToast(`No ${newBand.toUpperCase()} stations scanned yet`);
+  }
+});
+$('seek-up').addEventListener('click',   () => seek(+1));
+$('seek-down').addEventListener('click', () => seek(-1));
+$('stations-btn').addEventListener('click', () => openStationsModal(currentBand));
+$('modal-close').addEventListener('click', () => $('stations-modal').classList.remove('show'));
+document.querySelectorAll('[data-modal-band]').forEach(b => {
+  b.addEventListener('click', () => {
+    modalBand = b.dataset.modalBand;
+    renderStationsModal();
+  });
+});
+$('stations-modal').addEventListener('click', e => {
+  if (e.target.id === 'stations-modal') $('stations-modal').classList.remove('show');
+});
+
+const savedVol = localStorage.getItem(LS_VOL);
+if (savedVol != null) {
+  $('vol').value = savedVol;
+  $('vol').dispatchEvent(new Event('input'));
+}
+
+updateBandUI();
+renderPresets();
+pollStations();
+pollNowPlaying();
+setInterval(pollNowPlaying, 1000);
+setInterval(pollStations, 30000);
+</script>
+</body>
+</html>

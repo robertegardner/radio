@@ -1,0 +1,9 @@
+# /etc/sudoers.d/sdr-tuner
+# Allow the radio user to control sdr-* services without a password.
+# Validate after install: sudo visudo -cf /etc/sudoers.d/sdr-tuner
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl restart sdr-fm@active
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl stop    sdr-fm@active
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-fm@active
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-scan.service
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-am-scan.service
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl restart sdr-captions

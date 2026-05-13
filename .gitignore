@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Generated state — never commit local Pi state to git
+**/fcc.json
+**/stations.json
+**/stations_am.json
+**/now_playing.json
+**/captions.json
+**/active.env
+**/tuner.env
+**/captions.env
+**/overrides.json
+**/ui.json
+**/.token
+
+# Bundled tarballs
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.zip
+
+# Logs / temp
+*.log
+/tmp/

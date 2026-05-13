@@ -1,0 +1,308 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Pi SDR Tuner — Admin</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:760px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}
+  h1{margin:0 0 .25rem}
+  h2{font-size:1.1rem;margin:0}
+  .meta{color:#888;font-size:.9rem;margin-bottom:1.5rem}
+  .row-link{color:#a8d0f0;font-size:.85rem;text-decoration:none}
+  .row-link:hover{text-decoration:underline}
+  .status{padding:.75rem 1rem;background:#1a1a1a;border-radius:8px;margin-bottom:1rem;display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
+  .status.np{display:block}
+  .pill{padding:.15rem .6rem;border-radius:999px;font-size:.8rem}
+  .pill.on{background:#1e5631;color:#a8f0bd}
+  .pill.off{background:#444;color:#ccc}
+  table{width:100%;border-collapse:collapse;margin-top:.4rem}
+  th,td{padding:.55rem .4rem;text-align:left;border-bottom:1px solid #2a2a2a}
+  th{color:#888;font-weight:500;font-size:.85rem}
+  tr.playing{background:#182618}
+  td.station{line-height:1.35}
+  td.station .call{color:#eee;font-weight:500}
+  td.station .city{color:#888;font-size:.8rem;display:block}
+  td.station .none{color:#555}
+  button{background:#2563eb;color:#fff;border:0;padding:.4rem .9rem;border-radius:6px;cursor:pointer;font-size:.9rem}
+  button.stop{background:#444}
+  button.am{background:#9a4d12}
+  button.subtle{background:transparent;color:#888;border:1px solid #444;font-size:.8rem;padding:.3rem .7rem}
+  button:hover:not(:disabled){filter:brightness(1.15)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  form{display:inline}
+  .bar{display:inline-block;height:6px;background:#2563eb;border-radius:3px;vertical-align:middle;margin-left:.4rem}
+  .am-bar{background:#c97a3a}
+  .band-section{margin-top:2rem}
+  .band-header{display:flex;align-items:baseline;gap:1rem;margin-bottom:.4rem}
+  .band-header h2{font-size:1.1rem;margin:0}
+  .band-header .scanned{color:#666;font-size:.8rem}
+
+  /* Settings */
+  details.settings{background:#1a1a1a;border-radius:8px;margin-top:2rem;padding:0}
+  details.settings summary{cursor:pointer;padding:.75rem 1rem;list-style:none;color:#888;font-size:.9rem}
+  details.settings summary::-webkit-details-marker{display:none}
+  details.settings summary::before{content:"▸ ";color:#555}
+  details[open].settings summary::before{content:"▾ "}
+  .settings-body{padding:0 1rem 1rem;display:grid;gap:.75rem}
+  .settings-body label{display:grid;gap:.25rem;font-size:.85rem;color:#888}
+  .settings-body input[type=text]{
+    background:#0e0e10;border:1px solid #333;color:#eee;
+    padding:.5rem .65rem;border-radius:6px;font-size:.9rem;
+    font-family:'Courier New',monospace;
+  }
+  .settings-body .help{color:#555;font-size:.75rem;margin-top:-.1rem}
+  .settings-body .actions{display:flex;gap:.5rem;align-items:center;margin-top:.25rem}
+
+  #scan-banner{background:#1a2942;border:1px solid #2563eb;color:#a8d0f0;
+               padding:.75rem 1rem;border-radius:8px;margin-bottom:1rem;
+               display:none;align-items:center;gap:.75rem;font-size:.95rem}
+  .spinner{width:16px;height:16px;border:2px solid #2563eb;border-top-color:transparent;
+           border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #scan-elapsed{color:#888;font-size:.85rem;margin-left:auto}
+
+  .np-label{font-size:.8rem;color:#888;text-transform:uppercase;letter-spacing:.05em}
+  #np-station{font-size:1.2rem;margin-top:.3rem}
+  #np-track{color:#a8d0f0;font-size:1rem;margin-top:.2rem}
+  #np-rt{font-size:.85rem;color:#888;margin-top:.4rem;font-style:italic}
+  #np-meta{font-size:.75rem;color:#555;margin-top:.4rem}
+
+  #caption-source{color:#555;font-size:.7rem;margin-left:.5rem}
+  #lyrics-prev{color:#555;font-size:.95rem;min-height:1.3em}
+  #lyrics-cur{color:#e8b88a;font-size:1.4rem;font-weight:500;line-height:1.4;min-height:1.4em;margin:.3rem 0}
+  #lyrics-next{color:#888;font-size:1rem;min-height:1.3em}
+  #caption-text{color:#a8d0f0;font-size:1.05rem;line-height:1.5;font-style:italic;min-height:1.5em}
+</style></head><body>
+<h1>Pi SDR Tuner <span style="color:#666;font-size:.7em;font-weight:400">— admin</span></h1>
+<div class="meta">
+  Stream: <code>{{ resolved_stream_url }}</code>
+  &nbsp;·&nbsp;
+  <a class="row-link" href="/radio">Open radio UI →</a>
+</div>
+
+<div id="scan-banner">
+  <div class="spinner"></div>
+  <div id="scan-msg">Scanning band — stream paused, station list will refresh when done.</div>
+  <div id="scan-elapsed">0s</div>
+</div>
+
+<div class="status">
+  <div>Stream:
+    {% if status == 'active' %}
+      <span class="pill on">playing
+        {% if current_band == 'am' %}{{ current }} kHz{% else %}{{ current }} MHz{% endif %}
+        {% if current_label %} · {{ current_label }}{% endif %}
+      </span>
+    {% else %}<span class="pill off">stopped</span>{% endif %}
+  </div>
+  <form method="post" action="/stop"><button class="stop" id="stop-btn">Stop</button></form>
+  <form method="post" action="/scan-fm"><button id="scan-fm-btn">Scan FM</button></form>
+  <form method="post" action="/scan-am"><button id="scan-am-btn" class="am">Scan AM</button></form>
+  <form method="post" action="/reload-stations"><button class="subtle" title="Reload FCC + overrides JSON">Reload DB</button></form>
+</div>
+
+<div class="status np">
+  <div class="np-label">Now Playing</div>
+  <div id="np-station">—</div>
+  <div id="np-track"></div>
+  <div id="np-rt"></div>
+  <div id="np-meta"></div>
+</div>
+
+<div id="caption-panel" class="status np" style="display:none">
+  <div class="np-label">
+    <span id="caption-label">Captions</span>
+    <span id="caption-source"></span>
+  </div>
+  <div id="lyrics-view" style="display:none">
+    <div id="lyrics-prev"></div>
+    <div id="lyrics-cur">♪</div>
+    <div id="lyrics-next"></div>
+  </div>
+  <div id="captions-view" style="display:none">
+    <div id="caption-text"></div>
+  </div>
+</div>
+
+<div class="band-section">
+  <div class="band-header">
+    <h2>FM Band</h2>
+    <span class="scanned">{% if fm_scanned_at %}scanned {{ fm_scanned_at }}{% else %}not yet scanned{% endif %}</span>
+  </div>
+  {% if fm_stations %}
+  <table><thead><tr><th>Freq</th><th>Station</th><th>SNR</th><th></th></tr></thead><tbody>
+  {% for s in fm_stations %}
+    <tr class="{% if current_band == 'fm' and current == s.freq_mhz|string %}playing{% endif %}">
+      <td>{{ "%.1f"|format(s.freq_mhz) }} MHz</td>
+      <td class="station">
+        {% if s.call %}<span class="call">{{ s.call }}</span>{% else %}<span class="none">—</span>{% endif %}
+        {% if s.city %}<span class="city">{{ s.city }}{% if s.state %}, {{ s.state }}{% endif %}</span>{% endif %}
+      </td>
+      <td>{{ s.snr_db }} dB<span class="bar" style="width:{{ (s.snr_db*3)|int }}px"></span></td>
+      <td><form method="post" action="/tune">
+        <input type="hidden" name="freq" value="{{ s.freq_mhz }}">
+        <input type="hidden" name="band" value="fm">
+        <button>Tune</button></form></td>
+    </tr>
+  {% endfor %}
+  </tbody></table>
+  {% else %}<p style="color:#666">No FM stations yet — click "Scan FM".</p>{% endif %}
+</div>
+
+<div class="band-section">
+  <div class="band-header">
+    <h2>AM Band</h2>
+    <span class="scanned">{% if am_scanned_at %}scanned {{ am_scanned_at }}{% else %}not yet scanned{% endif %}</span>
+  </div>
+  {% if am_stations %}
+  <table><thead><tr><th>Freq</th><th>Station</th><th>SNR</th><th></th></tr></thead><tbody>
+  {% for s in am_stations %}
+    <tr class="{% if current_band == 'am' and current == s.freq_khz|string %}playing{% endif %}">
+      <td>{{ s.freq_khz }} kHz</td>
+      <td class="station">
+        {% if s.call %}<span class="call">{{ s.call }}</span>{% else %}<span class="none">—</span>{% endif %}
+        {% if s.city %}<span class="city">{{ s.city }}{% if s.state %}, {{ s.state }}{% endif %}</span>{% endif %}
+      </td>
+      <td>{{ s.snr_db }} dB<span class="bar am-bar" style="width:{{ (s.snr_db*3)|int }}px"></span></td>
+      <td><form method="post" action="/tune">
+        <input type="hidden" name="freq" value="{{ s.freq_khz }}">
+        <input type="hidden" name="band" value="am">
+        <button class="am">Tune</button></form></td>
+    </tr>
+  {% endfor %}
+  </tbody></table>
+  {% else %}<p style="color:#666">No AM stations yet — click "Scan AM". Best results after sunset and with a long-wire antenna.</p>{% endif %}
+</div>
+
+<details class="settings">
+  <summary>Settings</summary>
+  <form method="post" action="/settings" class="settings-body">
+    <label>
+      Site title
+      <input type="text" name="site_title" value="{{ settings.site_title }}" placeholder="Pi Radio">
+      <span class="help">Shown in the browser tab on the radio page.</span>
+    </label>
+    <label>
+      Stream URL
+      <input type="text" name="stream_url" value="{{ settings.stream_url }}" placeholder="https://icecast.example.com/fm.mp3">
+      <span class="help">URL the radio page connects to for audio playback. Leave blank to auto-build from the request host (e.g., http://radio:8000/fm.mp3). Set to your HTTPS reverse-proxy URL when serving the radio page over HTTPS.</span>
+    </label>
+    <label>
+      Stream label
+      <input type="text" name="stream_label" value="{{ settings.stream_label }}" placeholder="Local Icecast">
+      <span class="help">Friendly name for the stream source.</span>
+    </label>
+    <div class="actions">
+      <button type="submit">Save settings</button>
+      <span class="help">Changes apply immediately. Browser refresh required on the radio page.</span>
+    </div>
+  </form>
+</details>
+
+<script>
+async function updateNowPlaying() {
+  let d;
+  try { d = await (await fetch('/api/now_playing')).json(); }
+  catch (e) { return; }
+  const $ = id => document.getElementById(id);
+
+  const rds = d.rds || {};
+  const fcc = d.fcc;
+  const hasRds = rds && Object.keys(rds).length > 0;
+
+  let stationLabel = '—';
+  let cityLine = '';
+  if (rds.ps) {
+    stationLabel = rds.ps;
+    if (fcc && fcc.city) cityLine = fcc.city + (fcc.state ? ', ' + fcc.state : '');
+  } else if (fcc && fcc.call) {
+    stationLabel = fcc.call;
+    if (fcc.city) cityLine = fcc.city + (fcc.state ? ', ' + fcc.state : '');
+  } else if (rds.freq_mhz) {
+    stationLabel = rds.freq_mhz + ' MHz';
+  }
+
+  if (!hasRds && !fcc) {
+    $('np-station').textContent = '—';
+    $('np-track').textContent = '';
+    $('np-rt').textContent = '';
+    $('np-meta').textContent = (d.band === 'am')
+      ? 'AM has no over-the-air metadata; lookups come from the FCC database.'
+      : 'No RDS data yet (give it 10-30s on a strong station)';
+  } else {
+    $('np-station').textContent = stationLabel + (cityLine ? '  ·  ' + cityLine : '');
+    $('np-track').textContent = (rds.artist || rds.title)
+      ? [rds.artist, rds.title].filter(Boolean).join(' — ') : '';
+    $('np-rt').textContent = rds.rt || '';
+    const bits = [];
+    if (rds.pi) bits.push('PI ' + rds.pi);
+    if (rds.prog_type) bits.push(rds.prog_type);
+    if (rds.last_update) {
+      const age = Math.round(Date.now()/1000 - rds.last_update);
+      bits.push(age < 60 ? age + 's ago' : Math.round(age/60) + 'm ago');
+    }
+    $('np-meta').textContent = bits.join(' · ');
+  }
+
+  const panel = $('caption-panel');
+  const lyV   = $('lyrics-view');
+  const capV  = $('captions-view');
+  if (d.mode === 'lyrics' && d.lyrics && d.lyrics.lines && d.lyrics.lines.length) {
+    panel.style.display = 'block';
+    lyV.style.display = 'block';
+    capV.style.display = 'none';
+    $('caption-label').textContent = 'Lyrics';
+    const s = d.lyrics.song;
+    $('caption-source').textContent = s ? (s.artist + ' — ' + s.title) : '';
+    const lines = d.lyrics.lines;
+    const i = d.lyrics.index;
+    $('lyrics-prev').textContent = i > 0 ? lines[i-1].text : '';
+    $('lyrics-cur').textContent  = (i >= 0 && lines[i]) ? (lines[i].text || '♪') : '♪';
+    $('lyrics-next').textContent = lines[i+1] ? lines[i+1].text : '';
+  } else if (d.mode === 'captions' && d.caption && d.caption.text) {
+    panel.style.display = 'block';
+    lyV.style.display = 'none';
+    capV.style.display = 'block';
+    $('caption-label').textContent = 'Live Captions';
+    $('caption-source').textContent = (d.caption.age_s != null) ? (d.caption.age_s + 's ago') : '';
+    $('caption-text').textContent = d.caption.text;
+  } else {
+    panel.style.display = 'none';
+  }
+}
+setInterval(updateNowPlaying, 700);
+updateNowPlaying();
+
+let scanWasRunning = false;
+let scanStartedAt  = null;
+async function updateScanStatus() {
+  let d;
+  try { d = await (await fetch('/api/scan_status')).json(); }
+  catch (e) { return; }
+  const banner = document.getElementById('scan-banner');
+  const elapsed = document.getElementById('scan-elapsed');
+  const msg = document.getElementById('scan-msg');
+  const fmBtn = document.getElementById('scan-fm-btn');
+  const amBtn = document.getElementById('scan-am-btn');
+  const stopBtn = document.getElementById('stop-btn');
+  if (d.running) {
+    if (!scanWasRunning) scanStartedAt = Date.now();
+    scanWasRunning = true;
+    msg.textContent = `Scanning ${(d.band || '').toUpperCase()} band — stream paused, station list will refresh when done.`;
+    banner.style.display = 'flex';
+    elapsed.textContent = Math.floor((Date.now() - scanStartedAt) / 1000) + 's';
+    if (fmBtn) fmBtn.disabled = true;
+    if (amBtn) amBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = true;
+  } else if (scanWasRunning) {
+    scanWasRunning = false;
+    banner.innerHTML = '<div style="color:#a8f0bd">✓ Scan complete — refreshing...</div>';
+    setTimeout(() => location.reload(), 1200);
+  } else {
+    banner.style.display = 'none';
+    if (fmBtn) fmBtn.disabled = false;
+    if (amBtn) amBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = false;
+  }
+}
+setInterval(updateScanStatus, 2000);
+updateScanStatus();
+</script>
+</body></html>

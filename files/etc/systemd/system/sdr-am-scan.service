@@ -1,0 +1,15 @@
+[Unit]
+Description=SDR AM band scan
+After=network-online.target
+Conflicts=sdr-fm@active.service
+
+[Service]
+Type=oneshot
+User=radio
+TimeoutStartSec=300
+ExecStartPre=-/usr/bin/sudo /usr/bin/systemctl stop sdr-fm@active
+ExecStart=/usr/bin/python3 /opt/sdr-tuner/am_scan.py --gain 40
+ExecStartPost=-/usr/bin/sudo /usr/bin/systemctl start sdr-fm@active
+
+[Install]
+WantedBy=multi-user.target

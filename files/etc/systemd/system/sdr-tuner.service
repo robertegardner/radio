@@ -1,0 +1,16 @@
+[Unit]
+Description=SDR Tuner Web UI (Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radio
+WorkingDirectory=/opt/sdr-tuner
+EnvironmentFile=/etc/sdr-streams/tuner.env
+ExecStart=/usr/bin/python3 /opt/sdr-tuner/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

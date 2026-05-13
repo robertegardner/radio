@@ -1,0 +1,24 @@
+services:
+  whisper:
+    build: .
+    container_name: whisper-svc
+    restart: unless-stopped
+    ports:
+      - "8088:8000"
+    environment:
+      WHISPER_MODEL: small.en
+      WHISPER_DEVICE: cuda
+      WHISPER_COMPUTE: float16
+      WHISPER_TOKEN: ${WHISPER_TOKEN:?set me}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
