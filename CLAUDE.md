@@ -187,6 +187,15 @@ from the Pi.
   Real fix: rewrite against the FCC CDBS Public Database, which has
   authoritative transmitter coordinates. **This is the next non-feature task.**
 
+### HD Radio field notes
+
+Tested 2026-05-13. Cape Girardeau, MO is a small market with no HD Radio
+stations. Probed the 5 strongest FM signals (90.9, 97.5, 102.9, 106.1,
+96.3 MHz) — nrsc5 ran 15 s on each with no `Synchronized` output. The
+`hd_stream.py` fallback-to-analog path was verified to work correctly.
+Nearest HD market is St. Louis (~115 miles). The feature is ready and
+waiting for a signal.
+
 ### Planned features
 
 - **HD Radio PAD metadata.** nrsc5 logs station name, artist, and title
