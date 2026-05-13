@@ -93,7 +93,7 @@ install -d -m 0775 -o root  -g radio /etc/sdr-streams
 # 5. Install application files
 # ---------------------------------------------------------------------------
 echo "[5/9] Installing application files..."
-for f in stream.sh rds_watcher.py fm_scan.py am_scan.py app.py \
+for f in stream.sh hd_stream.py rds_watcher.py fm_scan.py am_scan.py app.py \
          caption_orchestrator.py station_db.py fcc_fetch.py ui_settings.py; do
   install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/$f" "/opt/sdr-tuner/$f"
 done

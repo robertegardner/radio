@@ -62,6 +62,17 @@ def lookup_fm(mhz):
     return _data["overrides_fm"].get(key) or _data["fm"].get(key)
 
 
+def hd_subchannels(mhz):
+    """Return list of HD program indices (0-based) for a frequency, if known."""
+    key = _norm_fm(mhz)
+    if not key:
+        return []
+    info = _data["overrides_fm"].get(key) or _data["fm"].get(key)
+    if not info:
+        return []
+    return list(info.get("hd_programs", []))
+
+
 def label(info):
     if not info:
         return None

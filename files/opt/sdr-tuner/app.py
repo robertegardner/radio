@@ -19,6 +19,7 @@ STATIONS_AM_PATH = Path("/var/lib/sdr-streams/stations_am.json")
 ENV_PATH         = Path("/etc/sdr-streams/active.env")
 NOW_PLAYING_PATH = Path("/run/sdr-streams/now_playing.json")
 CAPTIONS_PATH    = Path("/run/sdr-streams/captions.json")
+HD_STATUS_PATH   = Path("/run/sdr-streams/hd_status.json")
 
 SERVICE          = "sdr-fm@active"
 SCAN_FM_SERVICE  = "sdr-scan.service"
@@ -53,6 +54,9 @@ def annotate_fm(stations):
             s["city"]  = info.get("city")
             s["state"] = info.get("state")
             s["label"] = station_db.label(info)
+        hd = station_db.hd_subchannels(s.get("freq_mhz"))
+        if hd:
+            s["hd_programs"] = hd
         if s.get("ps") and not s.get("call"):
             s["call"] = s["ps"]
     return stations
@@ -69,14 +73,16 @@ def annotate_am(stations):
     return stations
 
 
-def write_env(freq: str, band: str = "fm"):
+def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0):
     if band == "am":
         mode, samp, extra, freq_val = "am", "12000", "-E direct2", f"{freq}k"
+    elif hd:
+        mode, samp, extra, freq_val = "hd", "200000", "", f"{freq}M"
     else:
         mode, samp, extra, freq_val = "wbfm", "200000", "", f"{freq}M"
 
     ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ENV_PATH.write_text(
+    content = (
         f"MODE={mode}\n"
         f"FREQ={freq_val}\n"
         f"SAMP={samp}\n"
@@ -86,10 +92,13 @@ def write_env(freq: str, band: str = "fm"):
         f'EXTRA_FLAGS="{extra}"\n'
         f"ICECAST_PASS={ICECAST_PASS}\n"
     )
+    if hd:
+        content += f"SUBCHANNEL={subchannel}\n"
+    ENV_PATH.write_text(content)
 
 
 def clear_runtime_state():
-    for p in (NOW_PLAYING_PATH, CAPTIONS_PATH):
+    for p in (NOW_PLAYING_PATH, CAPTIONS_PATH, HD_STATUS_PATH):
         try:
             p.unlink()
         except FileNotFoundError:
@@ -113,19 +122,27 @@ def is_active(unit: str) -> str:
 
 
 def current_tune():
+    """Return (freq, band, is_hd, subchannel) from active.env."""
     if not ENV_PATH.exists():
-        return None, None
+        return None, None, False, 0
     freq = mode = None
+    subchannel = 0
     for line in ENV_PATH.read_text().splitlines():
         if line.startswith("FREQ="):
             freq = line.split("=", 1)[1].strip().strip('"')
         elif line.startswith("MODE="):
             mode = line.split("=", 1)[1].strip().strip('"')
+        elif line.startswith("SUBCHANNEL="):
+            try:
+                subchannel = int(line.split("=", 1)[1].strip())
+            except ValueError:
+                subchannel = 0
+    is_hd = mode == "hd"
     band = "am" if mode == "am" else "fm"
     if freq:
-        if freq.endswith("M"):  freq = freq[:-1]
+        if freq.endswith("M"):   freq = freq[:-1]
         elif freq.endswith("k"): freq = freq[:-1]
-    return freq, band
+    return freq, band, is_hd, subchannel
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +152,7 @@ def current_tune():
 def index():
     fm = load_stations(STATIONS_FM_PATH)
     am = load_stations(STATIONS_AM_PATH)
-    freq, band = current_tune()
+    freq, band, is_hd, subchannel = current_tune()
 
     current_label = None
     if freq and band == "fm":
@@ -152,6 +169,8 @@ def index():
         am_scanned_at=am.get("scanned_at"),
         current=freq,
         current_band=band,
+        current_hd=is_hd,
+        current_subchannel=subchannel,
         current_label=current_label,
         status=is_active(SERVICE),
         settings=settings,
@@ -174,8 +193,13 @@ def radio():
 def tune():
     freq = request.form["freq"]
     band = request.form.get("band", "fm")
+    hd   = request.form.get("hd", "").lower() in ("1", "true", "yes")
     try:
-        write_env(freq, band)
+        subchannel = int(request.form.get("subchannel", "0") or "0")
+    except ValueError:
+        subchannel = 0
+    try:
+        write_env(freq, band, hd, subchannel)
     except OSError as e:
         app.logger.error("write_env failed: %s", e)
         return f"Could not save tune setting: {e}", 500
@@ -229,11 +253,13 @@ def settings_save():
 # ---------------------------------------------------------------------------
 @app.route("/api/status")
 def api_status():
-    freq, band = current_tune()
+    freq, band, is_hd, subchannel = current_tune()
     return jsonify({
-        "current_freq": freq,
-        "current_band": band,
-        "status":       is_active(SERVICE),
+        "current_freq":      freq,
+        "current_band":      band,
+        "current_hd":        is_hd,
+        "current_subchannel": subchannel,
+        "status":            is_active(SERVICE),
     })
 
 
@@ -253,13 +279,14 @@ def api_scan_status():
 
 @app.route("/api/now_playing")
 def api_now_playing():
-    rds = _load_json(NOW_PLAYING_PATH) or {}
-    cap = _load_json(CAPTIONS_PATH)    or {}
+    rds      = _load_json(NOW_PLAYING_PATH) or {}
+    cap      = _load_json(CAPTIONS_PATH)    or {}
+    hd_state = _load_json(HD_STATUS_PATH)   or {}
 
     caption_updated = cap.get("caption_updated", 0) or 0
     age_s = round(time.time() - caption_updated, 1) if caption_updated else None
 
-    freq, band = current_tune()
+    freq, band, is_hd, subchannel = current_tune()
     station_info = None
     if freq and band == "fm":
         station_info = station_db.lookup_fm(freq)
@@ -267,11 +294,16 @@ def api_now_playing():
         station_info = station_db.lookup_am(freq)
 
     return jsonify({
-        "available": bool(rds) or bool(cap) or bool(station_info),
-        "rds":       rds,
-        "fcc":       station_info,
-        "freq":      freq,
-        "band":      band,
+        "available":      bool(rds) or bool(cap) or bool(station_info),
+        "rds":            rds,
+        "fcc":            station_info,
+        "freq":           freq,
+        "band":           band,
+        "hd":             is_hd,
+        "subchannel":     subchannel,
+        "hd_probing":     hd_state.get("hd_probing", False),
+        "hd_locked":      hd_state.get("hd_locked", False),
+        "hd_unavailable": hd_state.get("hd_unavailable", False),
         "mode":      cap.get("mode", "idle"),
         "caption": {
             "text":    cap.get("caption_text", ""),
@@ -303,16 +335,21 @@ def api_tune():
     payload = request.get_json(silent=True) or {}
     freq = payload.get("freq")
     band = payload.get("band", "fm")
+    hd   = bool(payload.get("hd", False))
+    try:
+        subchannel = int(payload.get("subchannel", 0) or 0)
+    except (TypeError, ValueError):
+        subchannel = 0
     if not freq:
         return jsonify({"ok": False, "error": "missing freq"}), 400
     try:
-        write_env(str(freq), band)
+        write_env(str(freq), band, hd, subchannel)
     except OSError as e:
         app.logger.error("api_tune write_env failed: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
     clear_runtime_state()
     sysctl("restart")
-    return jsonify({"ok": True, "freq": freq, "band": band})
+    return jsonify({"ok": True, "freq": freq, "band": band, "hd": hd, "subchannel": subchannel})
 
 
 # ---------------------------------------------------------------------------

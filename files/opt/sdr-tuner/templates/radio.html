@@ -45,6 +45,7 @@
     display: flex; flex-direction: column; gap: 1rem;
   }
 
+  /* LCD */
   .lcd {
     background: linear-gradient(180deg, #0d0e10 0%, #16181c 100%);
     border: 1px solid #000;
@@ -64,6 +65,13 @@
     text-shadow: 0 0 8px var(--amber);
   }
   .lcd-band .other { color: var(--amber-dim); margin-left: .4rem; text-shadow: none; }
+  .lcd-band .hd-sub {
+    color: var(--amber);
+    margin-left: .35rem;
+    font-size: .75rem;
+    text-shadow: 0 0 6px var(--amber);
+    display: none;
+  }
   .lcd-status {
     display: flex; gap: .65rem; align-items: center;
     font-size: .7rem; color: var(--text-dim);
@@ -75,6 +83,7 @@
     transition: background .15s, box-shadow .15s;
   }
   .led.on  { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .led.hd  { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
   .led.err { background: var(--red);   box-shadow: 0 0 8px var(--red); }
 
   .lcd-freq {
@@ -104,6 +113,7 @@
   }
   .lcd-track:empty::before { content: "—"; color: var(--text-faint); }
 
+  /* Presets */
   .presets-label {
     font-size: .65rem; color: var(--text-dim);
     text-transform: uppercase; letter-spacing: .15em;
@@ -143,6 +153,7 @@
   .preset.empty .label { color: var(--text-faint); font-weight: 400; font-style: italic; }
   .preset.empty .freq { display: none; }
 
+  /* Controls */
   .controls {
     display: grid;
     grid-template-columns: auto 1fr auto;
@@ -163,12 +174,21 @@
     min-width: 44px; min-height: 40px;
   }
   .btn:hover:not(:disabled) { background: var(--bg-button-hover); }
-  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
   .btn.primary { background: var(--accent); border-color: var(--accent); }
   .btn.primary:hover { filter: brightness(1.1); }
   .btn.danger  { background: #3a2424; border-color: #5a3434; }
   .btn.toggle.on { background: var(--amber); color: #1a1208; border-color: var(--amber); }
 
+  /* HD subchannel row */
+  .hd-subch-row {
+    display: flex; flex-direction: column; gap: .35rem;
+  }
+  .hd-subch-group { display: flex; gap: .4rem; }
+  .btn.hd-ch { min-width: 52px; font-size: .8rem; font-family: 'Courier New', monospace; letter-spacing: .04em; }
+  .btn.hd-ch.active { background: var(--amber); color: #1a1208; border-color: var(--amber); }
+
+  /* Volume */
   .vol-wrap { display: flex; align-items: center; gap: .5rem; }
   .vol-label { font-size: 1.1rem; color: var(--text-dim); }
   input[type=range] {
@@ -188,6 +208,7 @@
     background: var(--amber); border-radius: 50%; cursor: pointer; border: 0;
   }
 
+  /* Ticker */
   .ticker {
     margin-top: .25rem;
     padding: .5rem .75rem;
@@ -202,6 +223,7 @@
   .ticker.lyric { color: #e8b88a; font-style: normal; font-weight: 500; }
   .ticker:empty { display: none; }
 
+  /* Station modal */
   .modal-bg {
     position: fixed; inset: 0;
     background: rgba(0,0,0,.7);
@@ -242,13 +264,25 @@
   }
   .modal-row .name { color: var(--text); font-size: .85rem; }
   .modal-row .city { color: var(--text-dim); font-size: .75rem; }
-  .modal-row .snr { color: var(--text-dim); font-size: .75rem; font-family: 'Courier New', monospace; }
+  .modal-row .snr  { color: var(--text-dim); font-size: .75rem; font-family: 'Courier New', monospace; }
+  .modal-row.hd-row {
+    padding-left: 1.75rem;
+    background: rgba(255,174,58,.03);
+    border-left: 2px solid var(--amber-dim);
+  }
+  .modal-row.hd-row .freq { color: var(--amber); font-size: .85rem; }
+  .hd-badge {
+    color: var(--amber); font-size: .68rem; font-weight: 700;
+    letter-spacing: .12em; padding: .1rem .3rem;
+    border: 1px solid var(--amber-dim); border-radius: 4px;
+  }
   .modal-actions {
     display: flex; justify-content: space-between; gap: .5rem;
     margin-top: .75rem;
   }
   .modal-empty { padding: 2rem; text-align: center; color: var(--text-dim); }
 
+  /* Toast */
   .toast {
     position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
     background: var(--bg-button); color: var(--text);
@@ -279,36 +313,42 @@
 <body>
 
 <div class="stereo">
+  <!-- LCD display -->
   <div class="lcd">
     <div class="lcd-row">
       <div class="lcd-band">
         <span id="band-fm">FM</span>
         <span id="band-am" class="other">AM</span>
+        <span id="band-hd-sub" class="hd-sub"></span>
       </div>
       <div class="lcd-status">
+        <span><span class="led" id="hd-led"></span> <span id="hd-label">HD</span></span>
         <span><span class="led" id="rds-led"></span> RDS</span>
         <span><span class="led" id="stream-led"></span> STREAM</span>
       </div>
     </div>
 
     <div class="lcd-freq" id="freq-display">---.-<span class="unit" id="unit">MHz</span></div>
-
     <div class="lcd-call" id="call-display">—</div>
     <div class="lcd-track" id="track-display"></div>
   </div>
 
+  <!-- Presets -->
   <div>
     <div class="presets-label">Presets — tap to tune, long-press to save current station</div>
     <div class="presets" id="presets"></div>
   </div>
 
+  <!-- Ticker (captions / lyrics) -->
   <div class="ticker" id="ticker"></div>
 
+  <!-- Main controls -->
   <div class="controls">
     <div class="ctrl-group">
       <button class="btn toggle" id="band-toggle" title="Switch band">FM</button>
+      <button class="btn toggle" id="hd-toggle" title="Toggle HD Radio" disabled>HD</button>
       <button class="btn" id="seek-down" title="Previous station">«</button>
-      <button class="btn" id="seek-up" title="Next station">»</button>
+      <button class="btn" id="seek-up"   title="Next station">»</button>
       <button class="btn" id="stations-btn" title="Browse stations">≡</button>
     </div>
     <div></div>
@@ -321,6 +361,17 @@
     </div>
   </div>
 
+  <!-- HD subchannel selector (shown only when HD is active) -->
+  <div class="hd-subch-row" id="hd-subch-row" style="display:none">
+    <div class="presets-label">HD Subchannel</div>
+    <div class="hd-subch-group">
+      <button class="btn hd-ch" data-sub="0">HD1</button>
+      <button class="btn hd-ch" data-sub="1">HD2</button>
+      <button class="btn hd-ch" data-sub="2">HD3</button>
+      <button class="btn hd-ch" data-sub="3">HD4</button>
+    </div>
+  </div>
+
   <div class="footer">
     <a href="/">admin</a>
   </div>
@@ -328,6 +379,7 @@
 
 <audio id="audio" preload="none"></audio>
 
+<!-- Station browser modal -->
 <div class="modal-bg" id="stations-modal">
   <div class="modal">
     <h3 id="modal-title">Stations</h3>
@@ -345,24 +397,31 @@
 <script>
 'use strict';
 
-// Server-rendered: configurable in admin UI > Settings.
+// Server-rendered stream URL (configurable in admin UI > Settings).
 const STREAM_URL = {{ stream_url|tojson }};
 
 const NUM_PRESETS = 12;
-const LS_PRESETS  = 'sdr-radio.presets.v1';
+const LS_PRESETS  = 'sdr-radio.presets.v2';
 const LS_VOL      = 'sdr-radio.vol';
 const LS_BAND     = 'sdr-radio.band';
+const LS_HD       = 'sdr-radio.hd';
+const LS_SUBCH    = 'sdr-radio.subch';
 
 const $ = id => document.getElementById(id);
 const audio = $('audio');
 
-let stations = { fm: [], am: [] };
-let currentBand = localStorage.getItem(LS_BAND) || 'fm';
-let currentFreq = null;
-let presets = loadPresets();
-let isPlaying = false;
-let modalBand = 'fm';
+let stations   = { fm: [], am: [] };
+let currentBand      = localStorage.getItem(LS_BAND) || 'fm';
+let currentFreq      = null;
+let currentHd        = localStorage.getItem(LS_HD) === '1';
+let currentSubchannel = parseInt(localStorage.getItem(LS_SUBCH) || '0', 10) || 0;
+let presets    = loadPresets();
+let isPlaying  = false;
+let modalBand  = 'fm';
 
+// ---------------------------------------------------------------------------
+// Presets
+// ---------------------------------------------------------------------------
 function loadPresets() {
   try {
     const raw = JSON.parse(localStorage.getItem(LS_PRESETS) || '[]');
@@ -374,39 +433,34 @@ function loadPresets() {
   } catch (e) {}
   return new Array(NUM_PRESETS).fill(null);
 }
-function savePresets() {
-  localStorage.setItem(LS_PRESETS, JSON.stringify(presets));
-}
+function savePresets() { localStorage.setItem(LS_PRESETS, JSON.stringify(presets)); }
 
 function renderPresets() {
   const grid = $('presets');
   grid.innerHTML = '';
   presets.forEach((p, i) => {
+    const isActive = p && currentFreq
+      && p.band === currentBand
+      && p.freq === currentFreq
+      && !!p.hd === currentHd
+      && (!currentHd || (p.subchannel || 0) === currentSubchannel);
+
     const btn = document.createElement('button');
-    btn.className = 'preset' + (p ? '' : ' empty');
-    if (p && currentFreq && p.band === currentBand && p.freq === currentFreq) {
-      btn.classList.add('active');
-    }
+    btn.className = 'preset' + (p ? '' : ' empty') + (isActive ? ' active' : '');
     btn.innerHTML = `
       <span class="num">${i + 1}</span>
-      <span class="label">${p ? (p.label || (p.band.toUpperCase() + ' ' + p.freq)) : 'empty'}</span>
-      <span class="freq">${p ? formatFreq(p.freq, p.band) : ''}</span>
+      <span class="label">${p ? (p.label || formatFreq(p.freq, p.band, !!p.hd, p.subchannel || 0)) : 'empty'}</span>
+      <span class="freq">${p ? formatFreq(p.freq, p.band, !!p.hd, p.subchannel || 0) : ''}</span>
     `;
     btn.addEventListener('click', () => {
       if (btn.dataset.suppressClick) { delete btn.dataset.suppressClick; return; }
-      if (p) tuneTo(p.freq, p.band);
+      if (p) tuneTo(p.freq, p.band, !!p.hd, p.subchannel || 0);
       else   savePresetSlot(i);
     });
-    btn.addEventListener('contextmenu', e => {
-      e.preventDefault();
-      savePresetSlot(i);
-    });
+    btn.addEventListener('contextmenu', e => { e.preventDefault(); savePresetSlot(i); });
     let lpTimer;
     const startLP = () => {
-      lpTimer = setTimeout(() => {
-        savePresetSlot(i);
-        btn.dataset.suppressClick = '1';
-      }, 700);
+      lpTimer = setTimeout(() => { savePresetSlot(i); btn.dataset.suppressClick = '1'; }, 700);
     };
     const cancelLP = () => clearTimeout(lpTimer);
     btn.addEventListener('touchstart', startLP, {passive: true});
@@ -420,65 +474,115 @@ function renderPresets() {
 }
 
 function savePresetSlot(slot) {
-  if (!currentFreq) {
-    showToast('Tune to a station first');
-    return;
-  }
+  if (!currentFreq) { showToast('Tune to a station first'); return; }
   const list = stations[currentBand] || [];
   const found = list.find(s => stationFreqStr(s, currentBand) === currentFreq);
-  const label = found && (found.call || found.ps)
+  let label = found && (found.call || found.ps)
     ? (found.call || found.ps)
     : (currentBand.toUpperCase() + ' ' + formatFreq(currentFreq, currentBand));
-  presets[slot] = { freq: currentFreq, band: currentBand, label };
+  if (currentHd) label += ' HD' + (currentSubchannel + 1);
+  presets[slot] = { freq: currentFreq, band: currentBand, hd: currentHd, subchannel: currentSubchannel, label };
   savePresets();
   renderPresets();
   showToast(`Saved to preset ${slot + 1}: ${label}`);
 }
 
+// ---------------------------------------------------------------------------
+// Frequency / band helpers
+// ---------------------------------------------------------------------------
 function stationFreqStr(s, band) {
   return band === 'fm'
     ? Number(s.freq_mhz).toString()
     : Number(s.freq_khz).toString();
 }
-function formatFreq(freq, band) {
+
+function formatFreq(freq, band, hd, subchannel) {
   if (!freq) return '';
+  if (hd) return `${Number(freq).toFixed(1)} HD${(subchannel ?? 0) + 1}`;
   return band === 'am' ? `${freq} kHz` : `${Number(freq).toFixed(1)} MHz`;
 }
 
-async function tuneTo(freq, band) {
-  showToast(`Tuning ${band.toUpperCase()} ${formatFreq(freq, band)}...`);
+// ---------------------------------------------------------------------------
+// Tune
+// ---------------------------------------------------------------------------
+async function tuneTo(freq, band, hd = false, subchannel = 0) {
+  const dispLabel = hd
+    ? `${band.toUpperCase()} ${Number(freq).toFixed(1)} HD${subchannel + 1}`
+    : `${band.toUpperCase()} ${formatFreq(freq, band)}`;
+  showToast(`Tuning ${dispLabel}…`);
   try {
     const r = await fetch('/api/tune', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({freq, band}),
+      body: JSON.stringify({freq, band, hd, subchannel}),
     });
     const j = await r.json();
     if (!j.ok) throw new Error(j.error || 'tune failed');
-    currentFreq = String(freq);
-    currentBand = band;
-    localStorage.setItem(LS_BAND, band);
+    currentFreq       = String(freq);
+    currentBand       = band;
+    currentHd         = hd;
+    currentSubchannel = subchannel;
+    localStorage.setItem(LS_BAND,  band);
+    localStorage.setItem(LS_HD,    hd ? '1' : '0');
+    localStorage.setItem(LS_SUBCH, String(subchannel));
     updateBandUI();
+    updateHdUI();
     renderPresets();
-    if (isPlaying) {
-      audio.pause();
-      setTimeout(() => playStream(), 1500);
-    }
+    if (isPlaying) { audio.pause(); setTimeout(() => playStream(), 1500); }
   } catch (e) {
     showToast('Tune failed: ' + e.message);
   }
 }
 
+// ---------------------------------------------------------------------------
+// Band UI
+// ---------------------------------------------------------------------------
 function updateBandUI() {
-  $('band-fm').style.color = currentBand === 'fm' ? 'var(--amber)' : 'var(--amber-dim)';
-  $('band-fm').style.textShadow = currentBand === 'fm' ? '0 0 8px var(--amber)' : 'none';
-  $('band-am').style.color = currentBand === 'am' ? 'var(--amber)' : 'var(--amber-dim)';
-  $('band-am').style.textShadow = currentBand === 'am' ? '0 0 8px var(--amber)' : 'none';
-  $('band-toggle').textContent = currentBand.toUpperCase();
+  $('band-fm').style.color       = currentBand === 'fm' ? 'var(--amber)' : 'var(--amber-dim)';
+  $('band-fm').style.textShadow  = currentBand === 'fm' ? '0 0 8px var(--amber)' : 'none';
+  $('band-am').style.color       = currentBand === 'am' ? 'var(--amber)' : 'var(--amber-dim)';
+  $('band-am').style.textShadow  = currentBand === 'am' ? '0 0 8px var(--amber)' : 'none';
+  $('band-toggle').textContent   = currentBand.toUpperCase();
   $('band-toggle').classList.toggle('on', currentBand === 'am');
-  $('unit').textContent = currentBand === 'am' ? 'kHz' : 'MHz';
+  $('unit').textContent          = currentBand === 'am' ? 'kHz' : 'MHz';
 }
 
+// ---------------------------------------------------------------------------
+// HD UI
+// ---------------------------------------------------------------------------
+function updateHdUI() {
+  const hdActive = currentHd && currentBand === 'fm';
+
+  // HD LED in status row
+  const led = $('hd-led');
+  led.classList.toggle('hd', hdActive);
+  led.classList.toggle('on', false);
+
+  // HD label text (HD1, HD2, …)
+  $('hd-label').textContent = hdActive ? `HD${currentSubchannel + 1}` : 'HD';
+
+  // Subchannel badge next to band letters on LCD
+  const sub = $('band-hd-sub');
+  sub.textContent = hdActive ? `HD${currentSubchannel + 1}` : '';
+  sub.style.display = hdActive ? '' : 'none';
+
+  // HD toggle button
+  const hdBtn = $('hd-toggle');
+  hdBtn.classList.toggle('on', hdActive);
+  hdBtn.disabled = currentBand !== 'fm' || !currentFreq;
+
+  // Subchannel row
+  $('hd-subch-row').style.display = hdActive ? '' : 'none';
+
+  // Active subchannel button
+  document.querySelectorAll('.hd-ch').forEach(btn => {
+    btn.classList.toggle('active', parseInt(btn.dataset.sub) === currentSubchannel);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Seek
+// ---------------------------------------------------------------------------
 function seek(direction) {
   const list = (stations[currentBand] || []).slice();
   if (!list.length) {
@@ -493,16 +597,15 @@ function seek(direction) {
   let idx = list.findIndex(s => stationFreqStr(s, currentBand) === currentFreq);
   if (idx < 0) idx = direction > 0 ? -1 : list.length;
   idx = (idx + direction + list.length) % list.length;
-  const s = list[idx];
-  tuneTo(stationFreqStr(s, currentBand), currentBand);
+  // Seeking always lands on analog (HD can be toggled after)
+  tuneTo(stationFreqStr(list[idx], currentBand), currentBand, false, 0);
 }
 
+// ---------------------------------------------------------------------------
+// Playback
+// ---------------------------------------------------------------------------
 function playStream() {
-  if (!STREAM_URL) {
-    showToast('No stream URL configured. Visit admin > Settings.');
-    return;
-  }
-  // Cache-bust so we get a fresh connection after retune
+  if (!STREAM_URL) { showToast('No stream URL configured. Visit admin > Settings.'); return; }
   const sep = STREAM_URL.includes('?') ? '&' : '?';
   audio.src = STREAM_URL + sep + 't=' + Date.now();
   audio.volume = $('vol').value / 100;
@@ -522,18 +625,21 @@ function playStream() {
   $('stream-led').classList.add('on');
 }
 function pauseStream() {
-  audio.pause();
-  audio.src = '';
+  audio.pause(); audio.src = '';
   isPlaying = false;
   $('play-btn').textContent = '▶';
   $('stream-led').classList.remove('on');
 }
 
+// ---------------------------------------------------------------------------
+// Station modal
+// ---------------------------------------------------------------------------
 function openStationsModal(band) {
   modalBand = band || currentBand;
   renderStationsModal();
   $('stations-modal').classList.add('show');
 }
+
 function renderStationsModal() {
   $('modal-title').textContent = `${modalBand.toUpperCase()} stations`;
   document.querySelectorAll('[data-modal-band]').forEach(b => {
@@ -552,6 +658,8 @@ function renderStationsModal() {
   }
   list.forEach(s => {
     const f = stationFreqStr(s, modalBand);
+
+    // Analog row
     const row = document.createElement('div');
     row.className = 'modal-row';
     row.innerHTML = `
@@ -563,30 +671,57 @@ function renderStationsModal() {
       <span class="snr">${s.snr_db != null ? s.snr_db + ' dB' : ''}</span>
     `;
     row.addEventListener('click', () => {
-      tuneTo(f, modalBand);
+      tuneTo(f, modalBand, false, 0);
       $('stations-modal').classList.remove('show');
     });
     target.appendChild(row);
+
+    // HD subchannel rows (FM only, when hd_programs is known)
+    if (modalBand === 'fm' && s.hd_programs && s.hd_programs.length) {
+      s.hd_programs.forEach(prog => {
+        const hdRow = document.createElement('div');
+        hdRow.className = 'modal-row hd-row';
+        const hdName = (s.call || s.ps || '') + ' HD' + (prog + 1);
+        hdRow.innerHTML = `
+          <div class="left">
+            <span class="freq">${formatFreq(f, 'fm', true, prog)}</span>
+            <span class="name">${hdName}</span>
+            ${s.city ? `<span class="city">${s.city}${s.state ? ', ' + s.state : ''}</span>` : ''}
+          </div>
+          <span class="hd-badge">HD</span>
+        `;
+        hdRow.addEventListener('click', () => {
+          tuneTo(f, 'fm', true, prog);
+          $('stations-modal').classList.remove('show');
+        });
+        target.appendChild(hdRow);
+      });
+    }
   });
 }
 
+// ---------------------------------------------------------------------------
+// Now playing poll
+// ---------------------------------------------------------------------------
 async function pollNowPlaying() {
   try {
     const d = await (await fetch('/api/now_playing')).json();
     if (d.freq && d.band) {
-      const changed = (d.freq !== currentFreq || d.band !== currentBand);
-      currentFreq = d.freq;
-      currentBand = d.band;
-      if (changed) {
-        updateBandUI();
-        renderPresets();
-      }
+      const hdChanged = (!!d.hd !== currentHd || (d.subchannel || 0) !== currentSubchannel);
+      const changed   = d.freq !== currentFreq || d.band !== currentBand || hdChanged;
+      currentFreq       = d.freq;
+      currentBand       = d.band;
+      currentHd         = !!d.hd;
+      currentSubchannel = d.subchannel || 0;
+      if (changed) { updateBandUI(); updateHdUI(); renderPresets(); }
     }
+    // Frequency display
     if (currentFreq) {
       $('freq-display').innerHTML =
         (currentBand === 'fm' ? Number(currentFreq).toFixed(1) : currentFreq)
         + `<span class="unit">${currentBand === 'am' ? 'kHz' : 'MHz'}</span>`;
     }
+    // Station label
     const rds = d.rds || {};
     const fcc = d.fcc;
     let label = '—', city = '';
@@ -600,6 +735,7 @@ async function pollNowPlaying() {
       label = 'AM Broadcast';
     }
     $('call-display').innerHTML = label + (city ? ` <span class="city">· ${city}</span>` : '');
+    // Track
     let track = '';
     if (rds.artist || rds.title) {
       track = [rds.artist, rds.title].filter(Boolean).join(' — ');
@@ -607,7 +743,23 @@ async function pollNowPlaying() {
       track = rds.rt;
     }
     $('track-display').textContent = track;
+    // HD state machine
+    if (d.hd_unavailable && currentHd) {
+      currentHd = false;
+      currentSubchannel = 0;
+      localStorage.setItem(LS_HD,   '0');
+      localStorage.setItem(LS_SUBCH, '0');
+      updateHdUI();
+      renderPresets();
+      showToast('No HD signal — fell back to FM analog');
+    } else if (d.hd_probing && currentHd) {
+      $('hd-label').textContent = 'HD…';
+    } else if (d.hd_locked && currentHd) {
+      $('hd-label').textContent = `HD${currentSubchannel + 1}`;
+    }
+    // LEDs
     $('rds-led').classList.toggle('on', !!(rds.ps || rds.rt));
+    // Ticker
     const ticker = $('ticker');
     if (d.mode === 'lyrics' && d.lyrics?.lines?.length) {
       const i = d.lyrics.index;
@@ -631,6 +783,9 @@ async function pollStations() {
   } catch (e) {}
 }
 
+// ---------------------------------------------------------------------------
+// Toast
+// ---------------------------------------------------------------------------
 let toastTimer;
 function showToast(msg) {
   const t = $('toast');
@@ -640,6 +795,9 @@ function showToast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
 }
 
+// ---------------------------------------------------------------------------
+// Event handlers
+// ---------------------------------------------------------------------------
 $('play-btn').addEventListener('click', () => {
   if (isPlaying) pauseStream(); else playStream();
 });
@@ -655,25 +813,37 @@ $('band-toggle').addEventListener('click', () => {
   const list = (stations[newBand] || []).slice();
   if (list.length) {
     list.sort((a, b) => (b.snr_db || 0) - (a.snr_db || 0));
-    tuneTo(stationFreqStr(list[0], newBand), newBand);
+    tuneTo(stationFreqStr(list[0], newBand), newBand, false, 0);
   } else {
     showToast(`No ${newBand.toUpperCase()} stations scanned yet`);
   }
+});
+$('hd-toggle').addEventListener('click', () => {
+  if (currentBand !== 'fm') { showToast('HD Radio is FM-only'); return; }
+  if (!currentFreq) { showToast('Tune to an FM station first'); return; }
+  tuneTo(currentFreq, 'fm', !currentHd, currentHd ? 0 : currentSubchannel);
+});
+document.querySelectorAll('.hd-ch').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (!currentHd || !currentFreq || currentBand !== 'fm') return;
+    const sub = parseInt(btn.dataset.sub);
+    if (sub !== currentSubchannel) tuneTo(currentFreq, 'fm', true, sub);
+  });
 });
 $('seek-up').addEventListener('click',   () => seek(+1));
 $('seek-down').addEventListener('click', () => seek(-1));
 $('stations-btn').addEventListener('click', () => openStationsModal(currentBand));
 $('modal-close').addEventListener('click', () => $('stations-modal').classList.remove('show'));
 document.querySelectorAll('[data-modal-band]').forEach(b => {
-  b.addEventListener('click', () => {
-    modalBand = b.dataset.modalBand;
-    renderStationsModal();
-  });
+  b.addEventListener('click', () => { modalBand = b.dataset.modalBand; renderStationsModal(); });
 });
 $('stations-modal').addEventListener('click', e => {
   if (e.target.id === 'stations-modal') $('stations-modal').classList.remove('show');
 });
 
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
 const savedVol = localStorage.getItem(LS_VOL);
 if (savedVol != null) {
   $('vol').value = savedVol;
@@ -681,6 +851,7 @@ if (savedVol != null) {
 }
 
 updateBandUI();
+updateHdUI();
 renderPresets();
 pollStations();
 pollNowPlaying();

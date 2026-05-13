@@ -87,7 +87,9 @@
   <div>Stream:
     {% if status == 'active' %}
       <span class="pill on">playing
-        {% if current_band == 'am' %}{{ current }} kHz{% else %}{{ current }} MHz{% endif %}
+        {% if current_band == 'am' %}{{ current }} kHz
+        {% elif current_hd %}{{ current }} MHz · HD{{ current_subchannel + 1 }}
+        {% else %}{{ current }} MHz{% endif %}
         {% if current_label %} · {{ current_label }}{% endif %}
       </span>
     {% else %}<span class="pill off">stopped</span>{% endif %}
@@ -136,10 +138,22 @@
         {% if s.city %}<span class="city">{{ s.city }}{% if s.state %}, {{ s.state }}{% endif %}</span>{% endif %}
       </td>
       <td>{{ s.snr_db }} dB<span class="bar" style="width:{{ (s.snr_db*3)|int }}px"></span></td>
-      <td><form method="post" action="/tune">
-        <input type="hidden" name="freq" value="{{ s.freq_mhz }}">
-        <input type="hidden" name="band" value="fm">
-        <button>Tune</button></form></td>
+      <td>
+        <form method="post" action="/tune" style="display:inline">
+          <input type="hidden" name="freq" value="{{ s.freq_mhz }}">
+          <input type="hidden" name="band" value="fm">
+          <button>Tune</button>
+        </form>
+        {% if s.hd_programs %}
+        <form method="post" action="/tune" style="display:inline;margin-left:.4rem">
+          <input type="hidden" name="freq" value="{{ s.freq_mhz }}">
+          <input type="hidden" name="band" value="fm">
+          <input type="hidden" name="hd" value="1">
+          <input type="hidden" name="subchannel" value="0">
+          <button class="subtle">HD1</button>
+        </form>
+        {% endif %}
+      </td>
     </tr>
   {% endfor %}
   </tbody></table>
