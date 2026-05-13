@@ -36,3 +36,4 @@ venv/
 # Logs / temp
 *.log
 /tmp/
+CLAUDE.md
