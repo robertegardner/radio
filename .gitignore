@@ -37,3 +37,4 @@ venv/
 *.log
 /tmp/
 CLAUDE.local.md
+.claude/
