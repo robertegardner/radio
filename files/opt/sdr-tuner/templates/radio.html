@@ -96,6 +96,7 @@
     margin: .5rem 0 .25rem;
     text-shadow: 0 0 12px rgba(255,174,58,.6);
     font-variant-numeric: tabular-nums;
+    cursor: pointer;
   }
   .lcd-freq .unit {
     font-size: 1rem; color: var(--amber-dim);
@@ -282,6 +283,31 @@
   }
   .modal-empty { padding: 2rem; text-align: center; color: var(--text-dim); }
 
+  /* Direct tune modal */
+  .direct-tune-body { display: flex; flex-direction: column; gap: .75rem; margin-bottom: .25rem; }
+  .direct-tune-band { display: flex; gap: .5rem; }
+  .direct-tune-input {
+    background: var(--bg-raise);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--amber);
+    font-family: 'Courier New', monospace;
+    font-size: 2.5rem;
+    font-weight: 700;
+    padding: .5rem .75rem;
+    outline: none;
+    width: 100%;
+    text-align: center;
+    -moz-appearance: textfield;
+    -webkit-appearance: none;
+    appearance: none;
+    text-shadow: 0 0 8px rgba(255,174,58,.4);
+  }
+  .direct-tune-input::-webkit-inner-spin-button,
+  .direct-tune-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+  .direct-tune-input:focus { border-color: var(--amber); box-shadow: 0 0 0 2px rgba(255,174,58,.15); }
+  .direct-tune-hint { font-size: .75rem; color: var(--text-faint); text-align: center; }
+
   /* Toast */
   .toast {
     position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
@@ -328,7 +354,7 @@
       </div>
     </div>
 
-    <div class="lcd-freq" id="freq-display">---.-<span class="unit" id="unit">MHz</span></div>
+    <div class="lcd-freq" id="freq-display" title="Tap to direct tune">---.-<span class="unit" id="unit">MHz</span></div>
     <div class="lcd-call" id="call-display">—</div>
     <div class="lcd-track" id="track-display"></div>
   </div>
@@ -349,6 +375,7 @@
       <button class="btn toggle" id="hd-toggle" title="Toggle HD Radio" disabled>HD</button>
       <button class="btn" id="seek-down" title="Previous station">«</button>
       <button class="btn" id="seek-up"   title="Next station">»</button>
+      <button class="btn" id="direct-tune-btn" title="Direct tune">⌨</button>
       <button class="btn" id="stations-btn" title="Browse stations">≡</button>
     </div>
     <div></div>
@@ -378,6 +405,25 @@
 </div>
 
 <audio id="audio" preload="none"></audio>
+
+<!-- Direct tune modal -->
+<div class="modal-bg" id="direct-tune-modal">
+  <div class="modal" style="max-width:320px">
+    <h3>Direct Tune</h3>
+    <div class="direct-tune-body">
+      <div class="direct-tune-band">
+        <button class="btn" data-dt-band="fm">FM (MHz)</button>
+        <button class="btn" data-dt-band="am">AM (kHz)</button>
+      </div>
+      <input class="direct-tune-input" id="direct-freq-input" type="number" autocomplete="off">
+      <div class="direct-tune-hint" id="direct-tune-hint"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" id="direct-tune-go">Tune</button>
+      <button class="btn" id="direct-tune-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <!-- Station browser modal -->
 <div class="modal-bg" id="stations-modal">
@@ -418,6 +464,7 @@ let currentSubchannel = parseInt(localStorage.getItem(LS_SUBCH) || '0', 10) || 0
 let presets    = loadPresets();
 let isPlaying  = false;
 let modalBand  = 'fm';
+let directTuneBand = currentBand;
 
 // ---------------------------------------------------------------------------
 // Presets
@@ -632,6 +679,56 @@ function pauseStream() {
 }
 
 // ---------------------------------------------------------------------------
+// Direct tune
+// ---------------------------------------------------------------------------
+function openDirectTune() {
+  directTuneBand = currentBand;
+  updateDirectTuneUI();
+  const inp = $('direct-freq-input');
+  if (currentFreq) {
+    inp.value = directTuneBand === 'fm' ? Number(currentFreq).toFixed(1) : currentFreq;
+  } else {
+    inp.value = '';
+  }
+  $('direct-tune-modal').classList.add('show');
+  setTimeout(() => { inp.select(); inp.focus(); }, 60);
+}
+
+function updateDirectTuneUI() {
+  document.querySelectorAll('[data-dt-band]').forEach(b => {
+    b.classList.toggle('primary', b.dataset.dtBand === directTuneBand);
+  });
+  const inp = $('direct-freq-input');
+  if (directTuneBand === 'fm') {
+    inp.min = 87.5; inp.max = 108.1; inp.step = 0.1; inp.placeholder = '000.0';
+    $('direct-tune-hint').textContent = '87.5 – 108.1 MHz';
+  } else {
+    inp.min = 530; inp.max = 1710; inp.step = 10; inp.placeholder = '0000';
+    $('direct-tune-hint').textContent = '530 – 1710 kHz (nearest 10 kHz)';
+  }
+}
+
+function commitDirectTune() {
+  const val = $('direct-freq-input').value.trim();
+  if (!val) { $('direct-tune-modal').classList.remove('show'); return; }
+  const num = parseFloat(val);
+  if (directTuneBand === 'fm') {
+    if (isNaN(num) || num < 87.5 || num > 108.1) {
+      showToast('FM: enter 87.5 – 108.1 MHz'); return;
+    }
+    $('direct-tune-modal').classList.remove('show');
+    tuneTo(Number(num.toFixed(1)).toString(), 'fm', false, 0);
+  } else {
+    const khz = Math.round(num / 10) * 10;
+    if (isNaN(num) || khz < 530 || khz > 1710) {
+      showToast('AM: enter 530 – 1710 kHz'); return;
+    }
+    $('direct-tune-modal').classList.remove('show');
+    tuneTo(String(khz), 'am', false, 0);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Station modal
 // ---------------------------------------------------------------------------
 function openStationsModal(band) {
@@ -832,6 +929,20 @@ document.querySelectorAll('.hd-ch').forEach(btn => {
 });
 $('seek-up').addEventListener('click',   () => seek(+1));
 $('seek-down').addEventListener('click', () => seek(-1));
+$('freq-display').addEventListener('click', openDirectTune);
+$('direct-tune-btn').addEventListener('click', openDirectTune);
+$('direct-tune-go').addEventListener('click', commitDirectTune);
+$('direct-tune-cancel').addEventListener('click', () => $('direct-tune-modal').classList.remove('show'));
+$('direct-freq-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') commitDirectTune();
+  if (e.key === 'Escape') $('direct-tune-modal').classList.remove('show');
+});
+$('direct-tune-modal').addEventListener('click', e => {
+  if (e.target.id === 'direct-tune-modal') $('direct-tune-modal').classList.remove('show');
+});
+document.querySelectorAll('[data-dt-band]').forEach(b => {
+  b.addEventListener('click', () => { directTuneBand = b.dataset.dtBand; updateDirectTuneUI(); });
+});
 $('stations-btn').addEventListener('click', () => openStationsModal(currentBand));
 $('modal-close').addEventListener('click', () => $('stations-modal').classList.remove('show'));
 document.querySelectorAll('[data-modal-band]').forEach(b => {
