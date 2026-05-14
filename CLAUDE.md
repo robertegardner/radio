@@ -18,8 +18,7 @@ captions for talk content, and presents a car-stereo-style web tuner UI.
 ## Where to find things
 
 Application code lives in `files/opt/sdr-tuner/`. On the Pi it deploys to
-`/opt/sdr-tuner/` (via symlink to `/srv/radio/files/opt/sdr-tuner/` so git
-pulls go live immediately).
+`/opt/sdr-tuner/` via `deploy.sh` (see "When making changes" below).
 
 | File | What it does |
 |------|--------------|
@@ -31,7 +30,7 @@ pulls go live immediately).
 | `app.py` | Flask app on port 8080. Two UIs (admin at `/`, stereo at `/radio`) plus JSON APIs. `write_env` / `current_tune` / tune endpoints all carry `hd` + `subchannel` fields. `/api/now_playing` exposes `hd_probing`, `hd_locked`, `hd_unavailable` from `hd_status.json`. |
 | `caption_orchestrator.py` | Decodes Icecast audio back to PCM, sends 6s chunks to Whisper for captions, fingerprints with Chromaprint/AcoustID for lyrics, looks up synced lyrics on LRClib. Writes `/run/sdr-streams/captions.json`. |
 | `station_db.py` | Lookup helper: maps frequencies to call signs/cities by consulting `fcc.json` and `overrides.json`. `hd_subchannels(mhz)` returns known HD program indices from `hd_programs` in the station record. |
-| `fcc_fetch.py` | Currently fetches from RadioBrowser (community-curated internet-radio catalog). Quality is poor — see "Known issues" below. |
+| `fcc_fetch.py` | Downloads FCC CDBS bulk files (facility, FM engineering, AM antenna, application tables) and joins them to produce `fcc.json` with real transmitter coordinates. Caches zip files in `/var/lib/sdr-streams/cdbs-cache/` (6-day TTL; use `--no-cache` to force refresh). FCC downloads can time out from the Pi — if so, download the four zip files on a laptop and scp to the cache dir. CDBS was frozen for new applications in Oct 2023 (existing licensed stations are complete). |
 | `ui_settings.py` | Persists user-configurable UI settings (stream URL, site title) to `/etc/sdr-streams/ui.json`. |
 | `templates/index.html` | Admin/control UI: stations table, scan buttons, settings, RDS now-playing, captions/lyrics view. Playing pill shows "HD1/HD2" suffix when in HD mode. FM rows show "HD1" tune button for stations with known `hd_programs`. |
 | `templates/radio.html` | Stereo-style UI: amber-LCD frequency display, HD LED + subchannel badge, HD toggle button, HD1–HD4 subchannel selector row, HD rows in station modal, 12 favorites (localStorage, HD-aware), seek/scan, browser audio playback. Handles `hd_probing` / `hd_locked` / `hd_unavailable` state from the API. |
@@ -146,8 +145,14 @@ cat /run/sdr-streams/hd_status.json | jq   # hd_probing / hd_locked / hd_unavail
 sudo systemctl stop sdr-fm@active
 timeout 20 nrsc5 -d 0 -g 49.6 -o /dev/null 100.7 0   # "Synchronized" = HD present
 
-# Fresh station database fetch
-sudo -u radio python3 /opt/sdr-tuner/fcc_fetch.py --lat 37.31 --lon -89.55 --max-km 400
+# Fresh station database fetch (defaults already set for Cape Girardeau)
+sudo -u radio python3 /opt/sdr-tuner/fcc_fetch.py
+# Force re-download of CDBS files (otherwise uses 6-day cache)
+sudo -u radio python3 /opt/sdr-tuner/fcc_fetch.py --no-cache
+# If Pi times out downloading from FCC, scp files from laptop first:
+#   scp facility.zip fm_eng_data.zip am_ant_sys.zip application.zip \
+#       radio:/var/lib/sdr-streams/cdbs-cache/
+#   (files from https://transition.fcc.gov/ftp/Bureaus/MB/Databases/cdbs/)
 ```
 
 ## Things to know about the dongle
@@ -176,16 +181,6 @@ If captions stop working, first check is `curl http://gpu-host:8088/health`
 from the Pi.
 
 ## Known issues and open work
-
-### High priority
-
-- **Station database quality is poor.** `fcc_fetch.py` currently uses
-  RadioBrowser, which is a catalog of internet-radio streams, not broadcast
-  stations. Many entries have stream-server coordinates rather than
-  transmitter coordinates, so distance-filtering produces nonsense results
-  (e.g. Louisville KY stations showing up for a Cape Girardeau location).
-  Real fix: rewrite against the FCC CDBS Public Database, which has
-  authoritative transmitter coordinates. **This is the next non-feature task.**
 
 ### HD Radio field notes
 
@@ -224,8 +219,7 @@ waiting for a signal.
   toolchain. Add `/recordings/` directory served read-only by Flask.
 
 - **Weekly cron for `fcc_fetch.py`.** Stations come and go. systemd
-  timer that runs `fcc_fetch.py` weekly and calls `/reload-stations`.
-  Wait until after the FCC rewrite though.
+  timer that runs `fcc_fetch.py --no-cache` weekly and calls `/reload-stations`.
 
 - **Scan-and-listen mode.** Cycle through scanned stations for ~15s
   each. Pure-JS change in `radio.html`.
