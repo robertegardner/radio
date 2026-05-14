@@ -73,12 +73,16 @@ tee
   ├── redsea ──→ rds_watcher.py ──→ /run/sdr-streams/now_playing.json
   ↓                                          ↓
 ffmpeg (de-emphasis, lowpass,            caption_orchestrator
-        MP3 encode)                       (separate service, reads Icecast)
+        MP3 encode, ac 1 → MONO)         (separate service, reads Icecast)
     ↓                                          ↓
 Icecast :8000/fm.mp3                /run/sdr-streams/captions.json
     ↓
 NPMplus → https://icecast.rg2.io/fm.mp3 → Browser <audio>
 ```
+
+The analog FM pipeline is **mono today**. `rtl_fm -M fm` is a mono
+demodulator (rtl_fm has no stereo mode), and ffmpeg downmixes with `-ac 1`.
+See "Planned features" for the FM-stereo-via-nrsc5 work item.
 
 **HD Radio (MODE=hd):**
 ```
@@ -192,6 +196,33 @@ Nearest HD market is St. Louis (~115 miles). The feature is ready and
 waiting for a signal.
 
 ### Planned features
+
+- **FM stereo via nrsc5.** The analog FM path is mono today because
+  `rtl_fm -M fm` is a mono demodulator. nrsc5 has an analog mode
+  (`--analog` / `-N`) that outputs proper stereo PCM by decoding the
+  19 kHz pilot and 38 kHz L-R subcarrier. Since nrsc5 is already
+  installed for HD Radio and `hd_stream.py` already manages it, the
+  cleanest path is to extend `hd_stream.py` (or add a sibling
+  `analog_stream.py`) to run nrsc5 in analog mode for `MODE=wbfm`,
+  replacing the rtl_fm + ffmpeg leg.
+
+  Why nrsc5 over csdr for this:
+  - csdr is lighter on CPU but less actively maintained
+  - csdr's pipeline doesn't easily branch IQ for parallel decoders, which
+    complicates the redsea integration we'd have to preserve
+  - One tool, one set of CPU/code-complexity costs, already deployed
+
+  Open question: where does RDS come from in this path? nrsc5 emits RDS
+  natively for analog FM, which could replace redsea entirely for the FM
+  branch (simpler) — or we keep redsea running in parallel against a
+  separate `rtl_fm` instance just for RDS (more code, but isolates the
+  stereo upgrade from the RDS parser we already trust). Decide once we
+  see what nrsc5's analog RDS output actually looks like.
+
+  Once stereo lands, consider bumping `BITRATE=128k` (the analog default)
+  to 192k or 256k in `active.env`. 128k stereo MP3 has audibly narrowed
+  imaging vs. 192k+. Trade-off is Icecast bandwidth (~30 MB/hour/listener
+  at 256k).
 
 - **HD Radio PAD metadata.** nrsc5 logs station name, artist, and title
   to stderr as it decodes. Capturing this (via a pipe on stderr) and
