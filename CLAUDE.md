@@ -15,6 +15,28 @@ captions for talk content, and presents a car-stereo-style web tuner UI.
 `https://radio.rg2.io/radio` (listener UI). Icecast is proxied behind
 `https://icecast.rg2.io/fm.mp3`. All three are reverse-proxied via NPMplus.
 
+## Hardware upgrade in progress (2026-05)
+
+The Nooelec NESDR SMArt v5 (RTL2832U) is being replaced with an **SDRplay
+RSPdx-R2**. The dx-R2 has three software-selectable antenna inputs (A/B/C),
+which eliminates the GPIO relay design outlined in the hardware buildkit —
+antenna switching becomes a software API call instead of a hardware relay. The
+Cat 5 long-wire AM antenna plan still stands.
+
+The Nooelec is being repurposed for a separate scanner project and will not be
+retained as a backup for this Pi. The radio runs exclusively on the dx-R2
+going forward.
+
+**Why the upgrade:** Front-end overload was confirmed on the Nooelec at
+`GAIN=30` with the Shakespeare 5120 antenna — 100.7 FM disappeared from scans;
+gain had to drop to ~5 to listen cleanly. The dx-R2's 14-bit ADC and better
+dynamic range should eliminate this entirely.
+
+**Primary listening targets (highest-priority use case: Cardinals baseball):**
+- KGMO 100.7 FM — primary FM station (Cape Girardeau)
+- KMOX 1120 AM — Cardinals play-by-play (St. Louis, 50 kW clear-channel)
+- KZYM 1230 AM — local talk/sports (Cape Girardeau)
+
 ## Where to find things
 
 Application code lives in `files/opt/sdr-tuner/`. On the Pi it deploys to
@@ -160,6 +182,10 @@ sudo -u radio python3 /opt/sdr-tuner/fcc_fetch.py --no-cache
 ```
 
 ## Things to know about the dongle
+
+> **Note:** The Nooelec RTL2832U is being replaced by an SDRplay RSPdx-R2.
+> The caveats below are RTL-specific; the dx-R2 uses a different driver
+> (`sdrplay` / `SoapySDR`) and has native AM coverage — no direct-sampling hack needed.
 
 The RTL2832U is fundamentally a DVB-T television tuner that the SDR community
 repurposed. Two recurring footguns:
