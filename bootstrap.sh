@@ -27,9 +27,13 @@ echo
 # 1. APT packages
 # ---------------------------------------------------------------------------
 echo "[1/9] Installing apt packages..."
+# NOTE: SDRplay RSPdx-R2 requires the SDRplay API + SoapySDRPlay plugin installed
+# before running this script. Download from https://www.sdrplay.com/downloads/
+# and install with their install.sh (installs libsdrplay_api + SoapySDRPlay.so).
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  rtl-sdr \
+  libsoapysdr-dev soapysdr-tools \
+  cmake \
   ffmpeg \
   icecast2 \
   python3 python3-flask python3-requests \
@@ -40,16 +44,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   jq curl
 
 # ---------------------------------------------------------------------------
-# 2. Blacklist DVB driver
+# 2. (Skipped: DVB driver blacklist was needed for RTL-SDR, not SDRplay)
 # ---------------------------------------------------------------------------
-echo "[2/9] Blacklisting kernel DVB driver..."
-cat >/etc/modprobe.d/blacklist-rtl.conf <<'EOF'
-blacklist dvb_usb_rtl28xxu
-blacklist rtl2832
-blacklist rtl2830
-EOF
-modprobe -r dvb_usb_rtl28xxu 2>/dev/null || true
-modprobe -r rtl2832 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 3. Build redsea from source (Meson build system)
@@ -69,6 +65,24 @@ if ! command -v redsea >/dev/null; then
   rm -rf "$TMP"
 else
   echo "[3/9] redsea already installed at $(which redsea), skipping build."
+fi
+
+# ---------------------------------------------------------------------------
+# 3b. Build rx_tools from source (SoapySDR-based rtl_fm/rtl_power replacements)
+# ---------------------------------------------------------------------------
+if ! command -v rx_fm >/dev/null; then
+  echo "[3b] Building rx_tools (SoapySDR FM/power tools)..."
+  TMP=$(mktemp -d)
+  git clone --depth 1 https://github.com/rxseger/rx_tools.git "$TMP/rx_tools"
+  (
+    cd "$TMP/rx_tools"
+    cmake -B build -DCMAKE_BUILD_TYPE=Release
+    cmake --build build -j "$(nproc)"
+    cmake --install build
+  )
+  rm -rf "$TMP"
+else
+  echo "[3b] rx_tools already installed at $(which rx_fm), skipping build."
 fi
 
 # ---------------------------------------------------------------------------
@@ -178,8 +192,8 @@ REMAINING STEPS:
        sudo -u radio python3 /opt/sdr-tuner/fcc_fetch.py \
          --lat YOUR_LAT --lon YOUR_LON --max-km 400
 
-  5. Verify the dongle:
-       rtl_test -t
+  5. Verify the SDRplay device:
+       SoapySDRUtil --find
 
   6. Start the stack:
        sudo systemctl start sdr-tuner sdr-fm@active sdr-captions

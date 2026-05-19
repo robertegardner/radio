@@ -20,8 +20,9 @@ def channels():
         f += CHAN_SPACING
 
 
-def run_rtl_power(out, gain, integ, dur, bin_khz):
-    cmd = ["rtl_power", "-f", f"{FM_LOW}M:{FM_HIGH}M:{bin_khz}k",
+def run_rx_power(out, gain, integ, dur, bin_khz):
+    cmd = ["rx_power", "-d", "driver=sdrplay", "-a", "Antenna A",
+           "-f", f"{FM_LOW}M:{FM_HIGH}M:{bin_khz}k",
            "-i", str(integ), "-e", str(dur), "-g", str(gain), str(out)]
     print(f"[scan] {' '.join(cmd)}", file=sys.stderr)
     subprocess.run(cmd, check=True)
@@ -55,11 +56,12 @@ def grab_rds(freq_mhz, gain, seconds=12):
     Uses select() to honor the timeout even when redsea produces no output."""
     try:
         rtl = subprocess.Popen(
-            ["rtl_fm", "-M", "fm", "-l", "0", "-A", "std",
-             "-s", "171000", "-g", str(gain), "-f", f"{freq_mhz}M", "-F", "9", "-"],
+            ["rx_fm", "-d", "driver=sdrplay", "-a", "Antenna A",
+             "-M", "fm", "-l", "0", "-A", "std",
+             "-s", "250000", "-g", str(gain), "-f", f"{freq_mhz}M", "-F", "9", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         redsea = subprocess.Popen(
-            ["redsea", "-r", "171000", "--output", "json"],
+            ["redsea", "-r", "250000", "--output", "json"],
             stdin=rtl.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         rtl.stdout.close()
     except FileNotFoundError as e:
@@ -111,7 +113,7 @@ def main():
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     raw = Path("/tmp/fm_power.csv")
 
-    run_rtl_power(raw, args.gain, args.integ, args.duration, args.bin_khz)
+    run_rx_power(raw, args.gain, args.integ, args.duration, args.bin_khz)
     bins = parse_rtl_power(raw)
 
     all_means = [statistics.mean(v) for v in bins.values() if v]

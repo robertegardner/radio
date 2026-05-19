@@ -31,18 +31,20 @@ nrsc5 = subprocess.Popen(
 
 ready, _, _ = select.select([nrsc5.stdout], [], [], PROBE_SECS)
 
-if not ready:
+# Treat as no-lock if: timeout (not ready), OR nrsc5 exited before producing audio
+# (nrsc5.poll() is not None means it already exited — stdout EOF without actual WAV data).
+if not ready or nrsc5.poll() is not None:
     nrsc5.terminate()
     nrsc5.wait()
     HD_STATUS.write_text(json.dumps({
         "hd_unavailable": True, "freq": FREQ_MHZ, "ts": int(time.time()),
     }))
-    # Replace this process with analog FM + RDS pipeline
+    # Replace this process with analog FM + RDS pipeline (rx_fm, Antenna A = FM).
     os.execvp("bash", ["bash", "-c",
-        f"rtl_fm -M fm -l 0 -A std -s 171000 -g {GAIN} -f {FREQ} -F 9 - | "
-        f"tee >(redsea -r 171000 --output json 2>/dev/null | "
+        f"rx_fm -d 'driver=sdrplay' -a 'Antenna A' -M fm -l 0 -A std -s 250000 -g {GAIN} -f {FREQ} -F 9 - | "
+        f"tee >(redsea -r 250000 --output json 2>/dev/null | "
         f"FREQ='{FREQ}' /opt/sdr-tuner/rds_watcher.py) | "
-        f"ffmpeg -hide_banner -loglevel warning -f s16le -ar 171000 -ac 1 -i - "
+        f"ffmpeg -hide_banner -loglevel warning -f s16le -ar 250000 -ac 1 -i - "
         f"-af 'aemphasis=mode=reproduction:type=75fm,lowpass=15000' "
         f"-ar 48000 -ac 1 "
         f"-c:a libmp3lame -b:a {BITRATE} -content_type audio/mpeg "

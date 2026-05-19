@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Walk the US AM broadcast band measuring per-channel signal strength.
 
-Uses rtl_fm in direct-sampling mode (-E direct2) one channel at a time.
-rtl_power's -D flag in apt's build is a boolean that doesn't accept the
-Q-branch input (input 2) most cheap RTL-SDR dongles need for AM.
+Uses rx_fm (SoapySDR) with the SDRplay RSPdx-R2 on Antenna B (Cat 5 long-wire).
+No direct-sampling mode needed — the dx-R2 covers AM natively down to 1 kHz.
 """
 import argparse
 import array
@@ -19,7 +18,7 @@ from pathlib import Path
 FIRST_CHAN_HZ    = 540_000
 LAST_CHAN_HZ     = 1_700_000
 CHAN_SPACING_HZ  = 10_000
-SAMPLE_RATE      = 12_000
+SAMPLE_RATE      = 48_000   # rx_fm output rate (-r 48k); hardware runs at 2 MSps (1M × 2 oversampling, supported by dx-R2)
 
 
 def channels():
@@ -32,11 +31,13 @@ def channels():
 def measure_channel(freq_hz: int, gain: float,
                     settle_ms: int = 200, dwell_ms: int = 350):
     cmd = [
-        "rtl_fm",
+        "rx_fm",
+        "-d", "driver=sdrplay",
+        "-a", "Antenna B",
         "-M", "am",
-        "-E", "direct2",
         "-f", str(freq_hz),
-        "-s", str(SAMPLE_RATE),
+        "-s", "1000000",    # 2× oversampling → 2 MSps hardware (supported by dx-R2)
+        "-r", "48000",      # resample output to 48 kHz; SAMPLE_RATE constant tracks this
         "-g", str(gain),
         "-l", "0",
         "-",
@@ -48,7 +49,7 @@ def measure_channel(freq_hz: int, gain: float,
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
     except FileNotFoundError as e:
-        print(f"[scan] rtl_fm not found: {e}", file=sys.stderr)
+        print(f"[scan] rx_fm not found: {e}", file=sys.stderr)
         return None
 
     data = b""

@@ -6,31 +6,43 @@ starting a new session.
 ## What this project is
 
 A software-defined radio (SDR) broadcasting setup running on a Raspberry Pi.
-Pairs a USB RTL-SDR dongle with Icecast streaming so you can listen to local
-FM/AM radio from any browser on your network. Beyond basic streaming, the
-stack decodes RDS metadata, looks up synced lyrics, runs Whisper-based live
-captions for talk content, and presents a car-stereo-style web tuner UI.
+Pairs an SDRplay RSPdx-R2 (via SoapySDR/rx_tools) with Icecast streaming so
+you can listen to local FM/AM radio from any browser on your network. Beyond
+basic streaming, the stack decodes RDS metadata, looks up synced lyrics, runs
+Whisper-based live captions for talk content, and presents a car-stereo-style
+web tuner UI.
 
 **The live deployment is at `https://radio.rg2.io`** (admin) and
 `https://radio.rg2.io/radio` (listener UI). Icecast is proxied behind
 `https://icecast.rg2.io/fm.mp3`. All three are reverse-proxied via NPMplus.
 
-## Hardware upgrade in progress (2026-05)
+## Hardware (completed 2026-05)
 
-The Nooelec NESDR SMArt v5 (RTL2832U) is being replaced with an **SDRplay
-RSPdx-R2**. The dx-R2 has three software-selectable antenna inputs (A/B/C),
-which eliminates the GPIO relay design outlined in the hardware buildkit —
-antenna switching becomes a software API call instead of a hardware relay. The
-Cat 5 long-wire AM antenna plan still stands.
+The Nooelec NESDR SMArt v5 (RTL2832U) has been replaced with an **SDRplay
+RSPdx-R2**. The dx-R2 has three software-selectable antenna inputs (A/B/C);
+switching is a SoapySDR API call, not a GPIO relay.
 
-The Nooelec is being repurposed for a separate scanner project and will not be
-retained as a backup for this Pi. The radio runs exclusively on the dx-R2
-going forward.
+**Antenna assignment:**
+- Antenna A (SMA) → Shakespeare 5120, FM/HD
+- Antenna B (SMA) → Cat 5 long-wire, AM
 
 **Why the upgrade:** Front-end overload was confirmed on the Nooelec at
 `GAIN=30` with the Shakespeare 5120 antenna — 100.7 FM disappeared from scans;
 gain had to drop to ~5 to listen cleanly. The dx-R2's 14-bit ADC and better
-dynamic range should eliminate this entirely.
+dynamic range eliminates this.
+
+**Key SoapySDR details for the dx-R2:**
+- SoapySDR module: `/usr/lib/SoapySDR/modules0.8/libsdrPlaySupport.so`
+- SDRplay API daemon: `sdrplay.service` (runs as root via `/opt/sdrplay_api/sdrplay_apiService`)
+- Device can only be held by ONE process at a time
+- Supported sample rates: 62.5, 96, 125, 192, 250, 384, 500, 768, 1000, 2000, 2048 kHz (etc.)
+- rx_fm uses 8× oversampling for FM, 2× for AM; the hardware rate must be in the supported list:
+  - FM streaming: target rate 250 kHz → hardware 2000 kHz ✓
+  - AM streaming: target rate 1000 kHz → hardware 2000 kHz ✓
+- rx_tools (`rx_fm`, `rx_power`) installed from source at `/usr/local/bin/`
+
+**HD Radio / nrsc5:** nrsc5 uses RTL-SDR API (`-d 0`) and cannot use the dx-R2.
+HD mode always falls back to analog FM until nrsc5 gains SoapySDR support.
 
 **Primary listening targets (highest-priority use case: Cardinals baseball):**
 - KGMO 100.7 FM — primary FM station (Cape Girardeau)
