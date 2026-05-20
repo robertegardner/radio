@@ -26,10 +26,16 @@ elif [[ "$MODE" == "wbfm" || "$MODE" == "fm" ]]; then
            -f mp3 '${ICECAST_URL}'"
 
 else
-  # AM, NFM, etc. Antenna B = AM long-wire. No direct-sampling flag needed (dx-R2 covers AM natively).
-  # SAMP is set to 96000 for AM — lowest dx-R2 rate with clean 2:1 decimation to 48k output.
-  exec bash -c "rx_fm -d 'driver=sdrplay' -a 'Antenna B' -M ${MODE} -f ${FREQ} -s ${SAMP} -r 48000 -g ${GAIN} - | \
-    ffmpeg -hide_banner -loglevel warning -f s16le -ar 48000 -ac 1 -i - \
+  # AM, NFM, etc. Normally Antenna B (Cat 5 AM long-wire); temporarily using Antenna A while
+  # Antenna B SMA connector is repaired. Switch back to 'Antenna B' once fixed.
+  #
+  # rx_fm with SDRplay applies a fixed +500 kHz LO offset (DC-spike avoidance). At SAMP=1000000
+  # the desired signal falls right at the Nyquist edge and gets filtered out. SAMP=2000000 puts
+  # it 500 kHz inside the passband where it demodulates cleanly. Do not lower SAMP below 2000000.
+  # rx_fm outputs at SAMP Hz (-r flag is silently ignored with SoapySDR); ffmpeg resamples to 48k.
+  exec bash -c "rx_fm -d 'driver=sdrplay' -a 'Antenna A' -M ${MODE} -f ${FREQ} -s ${SAMP} -g ${GAIN} - | \
+    ffmpeg -hide_banner -loglevel warning -f s16le -ar ${SAMP} -ac 1 -i - \
+           -ar 48000 -ac 1 \
            -c:a libmp3lame -b:a ${BITRATE} -content_type audio/mpeg \
            -f mp3 '${ICECAST_URL}'"
 fi

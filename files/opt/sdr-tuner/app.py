@@ -75,7 +75,7 @@ def annotate_am(stations):
 
 def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0):
     if band == "am":
-        mode, samp, freq_val = "am", "1000000", f"{freq}k"
+        mode, samp, freq_val = "am", "2000000", f"{freq}k"
     elif hd:
         mode, samp, freq_val = "hd", "200000", f"{freq}M"
     else:

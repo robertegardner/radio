@@ -38,7 +38,10 @@ dynamic range eliminates this.
 - Supported sample rates: 62.5, 96, 125, 192, 250, 384, 500, 768, 1000, 2000, 2048 kHz (etc.)
 - rx_fm uses 8× oversampling for FM, 2× for AM; the hardware rate must be in the supported list:
   - FM streaming: target rate 250 kHz → hardware 2000 kHz ✓
-  - AM streaming: target rate 1000 kHz → hardware 2000 kHz ✓
+  - AM streaming: target rate 2000 kHz → hardware 2000 kHz (1× oversample) ✓
+  - **AM LO offset:** rx_fm applies a fixed +500 kHz LO offset (DC-spike avoidance). At SAMP=1000000
+    the desired signal sits at the Nyquist edge and is filtered out. SAMP must be ≥ 2000000 so the
+    signal falls 500 kHz inside the ±1 MHz passband where it demodulates cleanly.
 - rx_tools (`rx_fm`, `rx_power`) installed from source at `/usr/local/bin/`
 
 **HD Radio / nrsc5:** nrsc5 uses RTL-SDR API (`-d 0`) and cannot use the dx-R2.
