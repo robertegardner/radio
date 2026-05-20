@@ -36,7 +36,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   cmake \
   ffmpeg \
   icecast2 \
-  python3 python3-flask python3-requests \
+  python3 python3-flask python3-requests python3-numpy python3-soapysdr \
   build-essential git \
   meson ninja-build pkg-config \
   libsndfile1-dev libliquid-dev nlohmann-json3-dev \

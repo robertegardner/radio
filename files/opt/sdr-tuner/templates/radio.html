@@ -557,6 +557,8 @@ async function tuneTo(freq, band, hd = false, subchannel = 0) {
     ? `${band.toUpperCase()} ${Number(freq).toFixed(1)} HD${subchannel + 1}`
     : `${band.toUpperCase()} ${formatFreq(freq, band)}`;
   showToast(`Tuning ${dispLabel}…`);
+  const wasPlaying = isPlaying;
+  if (isPlaying) pauseStream();
   try {
     const r = await fetch('/api/tune', {
       method: 'POST',
@@ -575,9 +577,31 @@ async function tuneTo(freq, band, hd = false, subchannel = 0) {
     updateBandUI();
     updateHdUI();
     renderPresets();
-    if (isPlaying) { audio.pause(); setTimeout(() => playStream(), 1500); }
+    if (wasPlaying) {
+      $('stream-led').classList.add('hd');   // amber = waiting for stream
+      await waitForStream();
+      $('stream-led').classList.remove('hd');
+      playStream();
+    }
   } catch (e) {
+    $('stream-led').classList.remove('hd');
     showToast('Tune failed: ' + e.message);
+  }
+}
+
+// Poll /api/status until the stream service reports active, then give Icecast
+// a moment to buffer before the caller reconnects audio.
+async function waitForStream(maxWaitMs = 15000, pollMs = 400) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, pollMs));
+    try {
+      const d = await (await fetch('/api/status')).json();
+      if (d.status === 'active') {
+        await new Promise(r => setTimeout(r, 500));
+        return;
+      }
+    } catch (e) {}
   }
 }
 
