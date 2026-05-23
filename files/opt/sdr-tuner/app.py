@@ -76,17 +76,20 @@ def annotate_am(stations):
 def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0):
     if band == "am":
         mode, samp, freq_val = "am", "2000000", f"{freq}k"
+        gain = 30
     elif hd:
         mode, samp, freq_val = "hd", "200000", f"{freq}M"
+        gain = 30
     else:
         mode, samp, freq_val = "wbfm", "200000", f"{freq}M"
+        gain = 30
 
     ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     content = (
         f"MODE={mode}\n"
         f"FREQ={freq_val}\n"
         f"SAMP={samp}\n"
-        f"GAIN=30\n"
+        f"GAIN={gain}\n"
         f"BITRATE=128k\n"
         f"MOUNT=fm.mp3\n"
         f"ICECAST_PASS={ICECAST_PASS}\n"

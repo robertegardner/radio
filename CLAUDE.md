@@ -24,7 +24,10 @@ switching is a SoapySDR API call, not a GPIO relay.
 
 **Antenna assignment:**
 - Antenna A (SMA) → Shakespeare 5120, FM/HD
-- Antenna B (SMA) → Cat 5 long-wire, AM
+- Antenna B — unused
+- Antenna C (SMA) → long-wire, AM
+
+**Nooelec NESDR SMArt v5** is back in service with a dipole antenna. It's available to nrsc5 as `-d 0` (RTL-SDR API) for HD Radio — the only path to HD since nrsc5 doesn't support SoapySDR.
 
 **Why the upgrade:** Front-end overload was confirmed on the Nooelec at
 `GAIN=30` with the Shakespeare 5120 antenna — 100.7 FM disappeared from scans;

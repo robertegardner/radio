@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Walk the US AM broadcast band measuring per-channel signal strength.
 
-Uses SoapySDR Python API with the SDRplay RSPdx-R2, Antenna B (Cat 5 long-wire).
+Uses SoapySDR Python API with the SDRplay RSPdx-R2, Antenna C (long-wire AM).
 No direct-sampling mode needed; the dx-R2 covers AM natively down to 1 kHz.
 
 Strategy: sweep the AM band in a small number of hops using FFT-based power
@@ -38,7 +38,7 @@ def fft_power_db(samples: np.ndarray) -> np.ndarray:
 
 
 def measure_band(gain: float, settle_ms: int, dwell_ms: int,
-                 antenna: str = "Antenna B"):
+                 antenna: str = "Antenna C"):
     """
     Sweep the AM band.  For each tuning hop, capture DWELL seconds of IQ,
     compute FFT, then average the bin nearest each 10 kHz AM channel center.

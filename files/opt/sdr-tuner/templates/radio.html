@@ -559,6 +559,8 @@ async function tuneTo(freq, band, hd = false, subchannel = 0) {
   showToast(`Tuning ${dispLabel}…`);
   const wasPlaying = isPlaying;
   if (isPlaying) pauseStream();
+  // Show amber immediately so there's always visual feedback during a tune.
+  $('stream-led').classList.add('hd');
   try {
     const r = await fetch('/api/tune', {
       method: 'POST',
@@ -578,10 +580,11 @@ async function tuneTo(freq, band, hd = false, subchannel = 0) {
     updateHdUI();
     renderPresets();
     if (wasPlaying) {
-      $('stream-led').classList.add('hd');   // amber = waiting for stream
       await waitForStream();
       $('stream-led').classList.remove('hd');
       playStream();
+    } else {
+      $('stream-led').classList.remove('hd');
     }
   } catch (e) {
     $('stream-led').classList.remove('hd');
@@ -589,16 +592,17 @@ async function tuneTo(freq, band, hd = false, subchannel = 0) {
   }
 }
 
-// Poll /api/status until the stream service reports active, then give Icecast
-// a moment to buffer before the caller reconnects audio.
-async function waitForStream(maxWaitMs = 15000, pollMs = 400) {
+// Poll /api/status until the stream service reports active, then wait for
+// Icecast to buffer enough audio for playback to succeed immediately.
+async function waitForStream(maxWaitMs = 20000, pollMs = 500) {
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, pollMs));
     try {
       const d = await (await fetch('/api/status')).json();
       if (d.status === 'active') {
-        await new Promise(r => setTimeout(r, 500));
+        // Service is active but Icecast needs a few seconds to buffer.
+        await new Promise(r => setTimeout(r, 3000));
         return;
       }
     } catch (e) {}
