@@ -12,8 +12,11 @@ every time.
 > than none — it makes Claude confidently wrong. If a conversation ends with
 > "we decided X" or "I finished Y", that is the signal to update.
 
-Last meaningful update: AM antenna build in progress; dx-R2 ordered & shipped,
-not yet received.
+Last meaningful update: 2026-05-27 — dx-R2 fully deployed and AM stack
+rebuilt around it (HDR + Python demodulator). Investigation this session
+identified local switching-supply RFI as the actual cap on AM audio
+quality; diagnostic tooling shipped. See
+`notes/2026-05-27-am-rfi-discovery.md` for the full record.
 
 ---
 
@@ -76,46 +79,33 @@ HD) is secondary. Key Cardinals stations:
 Because the Cardinals network is fundamentally AM-based, **good AM reception
 matters more than premium FM** for the core goal.
 
-## Hardware — current and incoming
+## Hardware — current state
 
-### Current
 - **Raspberry Pi 5** in the attic, UCTRONICS U627803 PoE HAT (the HAT has a
   cutout exposing 36 GPIO pins).
-- **Nooelec NESDR SMArt v5** (RTL2832U + R820T2) — the original SDR. 8-bit
-  ADC. **Currently the active SDR for the radio project.** Will move to the
-  scanner project once the dx-R2 takes over radio duty.
+- **SDRplay RSPdx-R2** (serial 24051FAF70) — primary SDR for the radio
+  project. 14-bit ADC, three software-selectable antenna inputs, HDR mode
+  engaged for any MW tune. SoapySDR / SoapySDRPlay3 driver, API 3.150000.
 - **Shakespeare 5120** — 5-foot marine FM whip antenna, FM-resonant
-  (88–108 MHz). **Installed in the attic and is the active antenna for the
-  radio project right now**, connected to the Nooelec via pigtail.
+  (88–108 MHz). Connected to **dx-R2 Antenna A (SMA)** for FM and HD modes.
+- **Cat 5 long-wire AM antenna** — built, strung through the attic.
+  Counterpoise in same Cat 5 bundle. Feeds a 9:1 unun balun → RG-58 → **dx-R2
+  Antenna C (BNC, HiZ-optimized)** for AM.
+- **dx-R2 Antenna B** — unused / spare.
+- **Nooelec NESDR SMArt v5** (RTL2832U + R820T2) — back in service with a
+  dipole antenna, available to nrsc5 via the RTL-SDR API (`-d 0`) for HD
+  Radio. nrsc5 doesn't support SoapySDR so HD path can only use the Nooelec.
 - **GPU host** — separate homelab machine running a Whisper FastAPI service
   in Docker, used for live captions. Token-authenticated.
 
-### Incoming / planned
-- **SDRplay RSPdx-R2** — ordered and shipped, not yet received. Will become
-  the dedicated AM/FM broadcast receiver for the radio project. 14-bit ADC,
-  three software-selectable antenna inputs, HDR mode for strong AM dynamic
-  range, hardware notch filters. Replaces the Nooelec for radio duty.
-- **A dipole antenna** — for the scanner project's varied VHF interests,
-  paired with the Nooelec.
-
-## Final antenna / SDR assignment plan
-
-Once the dx-R2 is installed, the intended steady state:
-
 | SDR | Antenna(s) | Purpose |
 |-----|-----------|---------|
-| **RSPdx-R2** | Shakespeare 5120 → Antenna A; Cat 5 AM long-wire → Antenna C (BNC) | Radio project: FM + AM broadcast |
-| **Nooelec NESDR SMArt v5** | Dipole antenna | Scanner project: EMS / NOAA APT / AIS / hobby |
+| **RSPdx-R2** | Shakespeare 5120 → Antenna A; Cat 5 long-wire → Antenna C | Radio project: FM (Antenna A) + AM (Antenna C); software-selected per tune |
+| **Nooelec NESDR SMArt v5** | Dipole | HD Radio via nrsc5; scanner project (planned) |
 
-- dx-R2 **Antenna A (SMA)** → Shakespeare 5120 (FM)
-- dx-R2 **Antenna B (SMA)** → spare / experimental
-- dx-R2 **Antenna C (BNC, HF-optimized)** → Cat 5 AM long-wire
-- Antenna selection on the dx-R2 is a software API call — no relay hardware.
-
-**Until the dx-R2 arrives:** the radio project keeps running on the Nooelec
-with the Shakespeare 5120. The Cat 5 AM antenna can be built and strung now,
-but it won't be usable for AM until the dx-R2 is installed (the Nooelec's AM
-performance is poor and it's busy on FM).
+Antenna selection on the dx-R2 is a SoapySDR API call — no relay hardware.
+GPIO relay plan from earlier in the project is DEAD (still documented in
+`hardware/` but those sections are obsolete).
 
 ## Key decisions made (so we don't re-litigate them)
 
@@ -149,60 +139,87 @@ performance is poor and it's busy on FM).
    codebases that happen to share the attic Pi. Different `/srv` directories,
    different system users, different SDRs, different antennas.
 
-## The AM antenna — current build (in progress)
+## The AM antenna — installed
 
-Building a Cat 5 long-wire AM antenna.
+Cat 5 long-wire is up. Reference facts kept for any future rebuild:
 
-- **Wire:** ~100 ft of Cat 5 on hand. Far end already joined (all 8
-  conductors twisted into one bundle).
-- **Near end:** splits into two 4-conductor leads — one antenna lead, one
-  counterpoise lead — both connecting to a 9:1 unun balun (a "balun one
-  nine", already on hand).
-- **Color convention (for future reference):** the balun terminals are
-  **not labeled**. Convention adopted for this build —
-  **orange pair + green pair = antenna lead** (to the ANTENNA side),
-  **blue pair + brown pair = counterpoise lead** (to the GROUND side).
-  Use this same mapping for any future work on this antenna.
-- **Balun:** 9:1 unun. Antenna lead → ANTENNA terminal, counterpoise lead →
-  GROUND terminal. Radio side feeds RG-58 coax to the dx-R2's Antenna C (BNC).
-- **Install plan:** string it through the attic as linearly as the framing
-  allows (gentle L-bends OK, no tight coiling, no spooling excess wire).
-  Drape from rafters, above the blown-cellulose ceiling insulation, away
-  from AC lines and the attic PoE camera switches. Install on a cool evening.
+- **Wire:** ~100 ft of Cat 5. Far end is all 8 conductors twisted into one
+  bundle.
+- **Near end:** splits into two 4-conductor leads — orange + green pair =
+  antenna lead (to ANTENNA terminal of the balun); blue + brown pair =
+  counterpoise lead (to GROUND terminal). Balun terminals are not labeled,
+  so this color convention is the only record.
+- **Balun:** 9:1 unun ("balun one nine"). Radio side feeds RG-58 to dx-R2
+  Antenna C (BNC).
+- **Strung:** through the attic as linearly as framing allowed, draped from
+  rafters above blown-cellulose insulation, away from AC lines and the
+  attic PoE camera switches.
 
 **Settled antenna facts:**
-- Linear run is essential — a coiled wire is electrically near-useless for
-  AM (adjacent turns cancel, it becomes an inductor, and it sits in the
-  noise). Length must be used as *length*, not spooled. Excess wire should
-  be cut, not coiled. (Coiling the *coax* feedline is fine — coax is shielded.)
-- The counterpoise being in the same Cat 5 jacket as the radiator is a mild
-  compromise but still worth connecting — better than leaving the balun's
-  GROUND terminal empty. Bob is not running a separate counterpoise wire.
-- Bob's attic is RF-favorable: pine/plywood/asphalt-shingle construction, no
-  foil radiant barrier, no metal roof, blown-cellulose insulation (RF-
-  transparent). Network noise sources (servers, WiFi) are in the basement
-  and main level — well separated. Only the attic PoE camera switches are
-  nearby; give them a few feet of berth.
-- Outdoor installation is not possible at Bob's location; attic is the
-  chosen compromise and is a good one given the construction.
+- Linear run is essential — a coiled wire becomes an inductor and is
+  electrically useless for AM. Cut excess, don't spool. (Coax feedline can
+  be coiled — it's shielded.)
+- Counterpoise in the same Cat 5 jacket as the radiator is a mild compromise
+  but still worth connecting; better than leaving GROUND empty.
+- Attic is RF-favorable here: pine/plywood/asphalt-shingle, no foil radiant
+  barrier, no metal roof, blown cellulose (RF-transparent). Outdoor install
+  is not possible.
 
 ## Project status snapshot
 
-- **Radio project:** running live on the Nooelec + Shakespeare 5120. HD Radio
-  implemented. FCC CDBS station database implemented (replaced an earlier
-  RadioBrowser approach that gave bad results). Admin UI + stereo `/radio` UI
-  both built. Code is current; the repo and the Pi are in sync.
-- **AM antenna:** under construction now. Far end joined; near end to be
-  wired to the balun; stringing pending a cool evening.
-- **dx-R2:** ordered and shipped; not yet received or installed.
-- **Scanner project:** skeleton repo only, build pending.
+- **Radio project:** running live on the dx-R2. FM uses rx_fm via SoapySDR
+  on Antenna A. AM uses a Python demodulator (`am_stream.py`) on Antenna C
+  — HDR mode + DAB notch engaged, PLL-based synchronous detection,
+  block-rate normalization (per-sample EMA was reverted during 2026-05-27
+  bisection, see "Recent investigation" below). HD Radio falls back to
+  analog FM (no HD stations in market).
+- **AM RFI hunt (open):** local AM is currently noise-floor-limited, not
+  software-limited. Two strong wide RFI signals at ~1186 and ~1340 kHz are
+  ~20 dB louder than legitimate local stations. Next step is portable AM
+  radio walk-through to locate the source devices. See
+  `notes/2026-05-27-am-rfi-discovery.md`.
+- **FCC CDBS station database:** implemented and current. Replaced an
+  earlier RadioBrowser approach. Real transmitter coordinates.
+- **Admin UI** at `https://radio.rg2.io`, **stereo UI** at `/radio`. RFI
+  banner added this session as a check-engine light for the noise-floor
+  problem.
+- **Scanner project:** skeleton repo only, build pending. Nooelec available
+  for it.
+
+## Recent investigation (2026-05-27 session)
+
+After the HDR+per-sample-EMA changes deployed earlier the same day,
+symptom was "all AM stations sound illegible" including strong locals.
+Bisected:
+
+1. Reverted per-sample EMA → no improvement
+2. Spectrum-scanned the AM band with HDR on, all notches off → found
+   environmental RFI dominating the band
+3. A/B/C scan of each notch settled a long-standing driver quirk:
+   `rfnotch_ctrl` on this driver build is empirically a broadcast-band
+   notch covering 540–1700 kHz (despite its name and description claiming
+   "RF Notch Filter Control"). Live config doesn't enable it — fortunate.
+
+Outcome: no demod or filter changes; the live tuner config was confirmed
+empirically correct. Diagnostic plumbing was added so the RFI condition
+is now visible in journal and in the admin UI banner. Full record in
+`notes/2026-05-27-am-rfi-discovery.md`. Driver quirks are documented in
+CLAUDE.md's "Known driver quirks" section.
 
 ## Open / planned work (radio project)
 
 Captured in the repo's CLAUDE.md, summarized here:
 
-- **dx-R2 integration** — new SoapySDR/sdrplay driver path; antenna selection
-  by API call; this is the next big code effort once the hardware arrives.
+- **Physical RFI hunt (highest priority for AM quality)** — portable AM
+  radio walk-through to find what's broadcasting on 1185 and 1340 kHz.
+  Common culprits: cheap LED bulbs, USB phone chargers, powerline
+  network adapters, network switches. Re-run `am_diag_scan.py` after
+  each removal to verify the noise floor dropped.
+- **Write `hardware/RFI_HUNT.md`** — methodology + log of identified
+  culprits. The admin UI banner already references it.
+- **Reintroduce per-sample EMA normalization** in `am_stream.py` after
+  the RFI environment is clean enough that demod-quality differences
+  are visible above the noise floor.
 - **FM stereo via nrsc5** — analog FM is mono today; nrsc5 analog mode adds
   stereo. Bump MP3 bitrate to 192–256k once stereo lands.
 - **NPMplus auth on admin endpoints** — `/radio` and read-only APIs stay
@@ -230,10 +247,11 @@ Captured in the repo's CLAUDE.md, summarized here:
 ## Things that have bitten this project before
 
 - **DVB kernel driver** auto-claims RTL-SDR dongles — blacklisted, needs a
-  reboot to take effect. Symptom: `usb_claim_interface error -6`.
+  reboot to take effect. Symptom: `usb_claim_interface error -6`. (Still
+  applies for the Nooelec serving HD Radio via nrsc5.)
 - **AM on RTL-SDR** needs direct sampling (`-E direct2`); the R820T tuner
-  can't go below ~24 MHz natively. (Moot once the dx-R2 takes over — it does
-  AM natively.)
+  can't go below ~24 MHz natively. (Moot for the radio project's AM path
+  now — runs on the dx-R2 which does AM natively.)
 - **`active.env` must be writable by `radio:radio`** or tuning returns 500.
 - **Trixie uses `/usr/bin/systemctl`**, not `/bin/systemctl` — matters for
   the sudoers rules.
@@ -241,6 +259,26 @@ Captured in the repo's CLAUDE.md, summarized here:
   publishing to Icecast and listening via the web UI.
 - **FM front-end overload** on the 8-bit Nooelec with a strong antenna —
   the reason for the dx-R2 upgrade.
+- **`rfnotch_ctrl` on dx-R2 is a broadcast-band notch, not FM-only.**
+  Enabling it attenuates 540–1700+ kHz by 30–44 dB. Live `am_stream.py`
+  leaves it at the driver's cold-start init (which is empirically
+  `false`, not the `default='true'` metadata claims). See CLAUDE.md
+  "Known driver quirks" and `notes/2026-05-27-am-rfi-discovery.md`.
+- **`SoapySDR.writeSetting` silently no-ops unknown keys** on
+  SoapySDRPlay3. Always pair writes with `readSetting` and compare.
+- **`getSettingInfo().value` (driver-reported default) can disagree with
+  the actual cold-start init.** Verify state with `readSetting` after open.
+- **USB over-current on the Pi disconnects the dx-R2.** Observed during
+  the 2026-05-27 session — the dx-R2 fell off the bus and `sdr-fm@active`
+  crash-looped for hours emitting "Device has been removed" while
+  Icecast kept its mount open against a dead pipe. The device
+  re-enumerated cleanly on USB, but the long-running stream process held
+  a stale handle. Recovery: `sudo systemctl restart sdr-fm@active`. Root
+  cause of the over-current event itself is not yet known.
+- **Local AM RFI swamps the noise floor.** Two strong wide signals at
+  ~1186 kHz and ~1340 kHz, ~20 dB louder than any legitimate local
+  station. Locating them is a hardware walk-through, not a software
+  fix.
 
 ---
 
