@@ -76,7 +76,12 @@ def annotate_am(stations):
 def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0):
     if band == "am":
         mode, samp, freq_val = "am", "2000000", f"{freq}k"
-        gain = 30
+        # am_stream.py disables the hardware AGC and uses this as a fixed manual
+        # gain. 20 was empirically the sweet spot: KMOX 1120 (50 kW) peaks at
+        # ~0.28 (28% ADC full scale) — plenty of headroom, no compression. At
+        # GAIN=30 with AGC off the dx-R2 starts to overload on the strongest
+        # local AM carriers.
+        gain = 20
     elif hd:
         mode, samp, freq_val = "hd", "200000", f"{freq}M"
         gain = 30

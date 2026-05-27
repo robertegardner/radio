@@ -62,7 +62,8 @@ Application code lives in `files/opt/sdr-tuner/`. On the Pi it deploys to
 
 | File | What it does |
 |------|--------------|
-| `stream.sh` | Bash wrapper around `rtl_fm` / `redsea` / `ffmpeg`. Reads `/etc/sdr-streams/active.env`. Branches: `hd` → `hd_stream.py`; `wbfm`/`fm` → rtl_fm + redsea + ffmpeg; AM/other → rtl_fm + ffmpeg. |
+| `stream.sh` | Bash wrapper around the demod/encoder chain. Reads `/etc/sdr-streams/active.env`. Branches: `hd` → `hd_stream.py`; `wbfm`/`fm` → rx_fm + redsea + ffmpeg; AM/other → `am_stream.py` + ffmpeg. |
+| `am_stream.py` | AM demodulator with PLL-based synchronous detection. Reads raw IQ from the dx-R2 (Antenna C, 2 MSps, hardware AGC off, fixed manual gain), mixes the +500 kHz LO offset down, two-stage decimating FIR to 50 kHz, does a one-shot FFT lock on the actual carrier frequency (±200 Hz of DC — KMOX is ~10 Hz off due to TX+LO drift), then sync-demods via per-sample NCO mix and real-part extraction. Normalizes by envelope amplitude. See `notes/2026-05-26-am-audio-tuning.md` for the design rationale. |
 | `hd_stream.py` | HD Radio pipeline. Starts nrsc5, waits up to 15 s for audio lock. Lock: bridges nrsc5 → ffmpeg → Icecast. No lock: writes `hd_status.json` and exec's into analog FM+RDS fallback. Never crash-loops. |
 | `rds_watcher.py` | Reads JSON from `redsea` on stdin, parses station name + artist/title from the unstructured RT field, writes `/run/sdr-streams/now_playing.json`. Knows several RT formats (Artist - Title, "Artist with Title on STATION", etc.) |
 | `fm_scan.py` | rtl_power band sweep of 87.9–108.1 MHz, identifies stations above noise floor, optionally probes each one for RDS PS name. Writes `/var/lib/sdr-streams/stations.json`. |

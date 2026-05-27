@@ -28,18 +28,26 @@ elif [[ "$MODE" == "wbfm" || "$MODE" == "fm" ]]; then
 else
   # AM, NFM, etc. Antenna C = long-wire AM antenna.
   #
-  # rx_fm with SDRplay applies a fixed +500 kHz LO offset (DC-spike avoidance). At SAMP=1000000
-  # the desired signal falls right at the Nyquist edge and gets filtered out. SAMP=2000000 puts
-  # it 500 kHz inside the passband where it demodulates cleanly. Do not lower SAMP below 2000000.
-  # rx_fm outputs at SAMP Hz (-r flag is silently ignored with SoapySDR); ffmpeg resamples to 48k.
-  #
-  # Audio filter chain:
-  #   highpass=300   — cut hum and low rumble below voice range
-  #   lowpass=5000   — cut noise above AM broadcast audio band (~5 kHz max)
-  #   dynaudnorm     — level-normalize so quiet signals are listenable without clipping loud ones
-  exec bash -c "rx_fm -d 'driver=sdrplay' -a 'Antenna C' -M ${MODE} -f ${FREQ} -s ${SAMP} -g ${GAIN} - | \
-    ffmpeg -hide_banner -loglevel warning -f s16le -ar ${SAMP} -ac 1 -i - \
-           -af 'aresample=48000,highpass=f=300,lowpass=f=5000,dynaudnorm=framelen=150:gausssize=3:maxgain=50' \
+  # am_stream.py replaces rx_fm for AM. rx_fm under SoapySDR has no channel
+  # filter (the -r audio rate flag is silently ignored), so its envelope
+  # detector mixes the entire IF bandwidth — the strongest station in the
+  # band dominates the audio regardless of where you tune. am_stream.py
+  # captures IQ from the dx-R2 directly, mixes to baseband, decimates with
+  # a narrow FIR (final channel bandwidth ~6 kHz), envelope-detects, and
+  # outputs 50 kHz mono PCM to stdout.
+  # Filter chain (must run at 48k — biquad cutoffs near sample rate misbehave at 50k):
+  #   highpass×2 @300 — 4-pole highpass to crush 60/120 Hz mains hum. AM antennas
+  #                     near power lines pick this up at +60 dB; without filtering
+  #                     it dominates the audio and dynaudnorm normalizes to the
+  #                     hum instead of the voice. 4-pole @300 puts 60 Hz down 56 dB.
+  #   lowpass=3800   — cleans up residue above the am_stream.py 3.5 kHz channel filter
+  #   dynaudnorm     — maxgain=6 (~16 dB) gives weak stations enough headroom
+  #                    to come up to comfortable loudness. Long framelen+gausssize
+  #                    means it averages over ~5 seconds so it can't react to
+  #                    syllable-rate dynamics and pump on speech rhythm.
+  exec bash -c "python3 /opt/sdr-tuner/am_stream.py | \
+    ffmpeg -hide_banner -loglevel warning -f s16le -ar 50000 -ac 1 -i - \
+           -af 'aresample=48000,highpass=f=300:p=2,highpass=f=300:p=2,lowpass=f=3800,dynaudnorm=framelen=500:gausssize=11:maxgain=6' \
            -ar 48000 -ac 1 \
            -c:a libmp3lame -b:a ${BITRATE} -content_type audio/mpeg \
            -f mp3 '${ICECAST_URL}'"

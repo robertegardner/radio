@@ -20,6 +20,7 @@ install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/rds_watcher.py"         /o
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/fcc_fetch.py"           /opt/sdr-tuner/fcc_fetch.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/fm_scan.py"             /opt/sdr-tuner/fm_scan.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/am_scan.py"             /opt/sdr-tuner/am_scan.py
+install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/am_stream.py"           /opt/sdr-tuner/am_stream.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/caption_orchestrator.py" /opt/sdr-tuner/caption_orchestrator.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/ui_settings.py"         /opt/sdr-tuner/ui_settings.py
 install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/radio.html"   /opt/sdr-tuner/templates/radio.html
