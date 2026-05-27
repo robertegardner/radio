@@ -11,14 +11,18 @@ audio output regardless of where you "tune."
 This script reads raw IQ from the dx-R2 via SoapySDR and runs a real DSP
 chain:
 
-  1. Hardware LO is set to FREQ + 500 kHz so the desired signal sits 500 kHz
-     off baseband DC (keeps the dx-R2's DC spike out of the channel).
-  2. A digital NCO mixer shifts the signal back to baseband.
+  1. Engage the dx-R2 MW-band features (HDR + DAB notch). HDR provides a
+     dedicated wide-DR signal path centered on MW and notably eliminates the
+     DC spike that direct-conversion architectures normally produce, so we
+     can place the target carrier at DC instead of using an LO offset.
+  2. Hardware LO is set directly to FREQ.
   3. Two-stage decimating FIR filter narrows to ~6 kHz around DC:
        2 MHz --(decim 8)--> 250 kHz --(decim 5)--> 50 kHz
-  4. AM envelope detect (|IQ|) on the now-narrow channel.
-  5. Track and remove the carrier DC component.
-  6. Simple AGC on the envelope so quiet stations sound similar to loud ones.
+  4. FFT-based one-shot PLL lock finds the actual carrier offset (carrier
+     tolerance + LO drift typically ±50 Hz of DC).
+  5. Per-sample NCO de-rotates the carrier exactly to DC; real part is audio.
+  6. Per-sample EMA tracks the carrier amplitude (slow); audio is normalized
+     by it for modulation-index output that's invariant to slow fading.
   7. s16le mono PCM at 50 kHz to stdout for ffmpeg.
 
 Reads FREQ and GAIN from /etc/sdr-streams/active.env.
@@ -32,9 +36,24 @@ import SoapySDR
 from SoapySDR import SOAPY_SDR_CS16, SOAPY_SDR_RX
 
 HW_RATE = 2_000_000
-LO_OFFSET = 500_000
+# With HDR mode engaged the dx-R2's HDR signal path eliminates the DC spike
+# that motivated the +500 kHz offset on the non-HDR path. Place the target
+# at DC and let the PLL FFT search take up the small carrier-tolerance slack.
+LO_OFFSET = 0
 ANTENNA = "Antenna C"
 DRIVER = "sdrplay"
+
+# Settings we engage for MW (freq < 30 MHz). hdr_ctrl gives the dx-R2 a
+# dedicated wide-DR signal path centered on MW; dabnotch_ctrl rejects the
+# DAB band (no downside in the US). We deliberately leave rfnotch_ctrl OFF —
+# on the dx-R2 it's a combined MW+FM broadcast notch and would attenuate the
+# band we want to listen to. biasT_ctrl off because Antenna C is a passive
+# long-wire and we don't want DC out the SMA.
+MW_SETTINGS = (
+    ("hdr_ctrl", "true"),
+    ("dabnotch_ctrl", "true"),
+    ("biasT_ctrl", "false"),
+)
 
 DECIM1 = 8
 DECIM2 = 5
@@ -122,6 +141,17 @@ def main() -> int:
         sys.stderr.write(f"am_stream: setGainMode(False) failed: {e}\n")
     sdr.setGain(SOAPY_SDR_RX, 0, gain)
     sdr.setFrequency(SOAPY_SDR_RX, 0, lo_freq)
+
+    # Engage MW-band features on the dx-R2. The SoapySDRPlay3 driver silently
+    # no-ops unknown keys, so read back each value to confirm. This is the only
+    # way to catch driver-version mismatches at startup.
+    if target_freq < 30_000_000:
+        for key, want in MW_SETTINGS:
+            sdr.writeSetting(key, want)
+            got = sdr.readSetting(key)
+            mark = "ok" if got == want else "MISMATCH"
+            sys.stderr.write(f"am_stream: {key}={got!r} (wanted {want!r}) [{mark}]\n")
+
     sys.stderr.write(f"am_stream: actual gain = {sdr.getGain(SOAPY_SDR_RX, 0)}\n")
 
     rx = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16)
@@ -129,9 +159,10 @@ def main() -> int:
 
     raw = np.empty(BLOCK_COMPLEX * 2, dtype=np.int16)
 
-    # NCO: continuous phase across blocks. Positive omega because the signal of
-    # interest lives at -LO_OFFSET in baseband (hardware LO is high-side), so
-    # we mix UP by +LO_OFFSET to bring it to DC.
+    # NCO mix-back: this becomes identity (omega=0) when LO_OFFSET=0, i.e.
+    # when HDR is engaged and we place the target at DC directly. Kept in
+    # general form so this file can fall back to LO_OFFSET>0 if HDR ever
+    # gets disabled (e.g. for HF outside the MW band).
     nco_omega = +2.0 * np.pi * LO_OFFSET / HW_RATE
     sample_n = 0
 
@@ -152,9 +183,7 @@ def main() -> int:
     #   1. Collect ~0.5 s of post-filter IQ, FFT, find carrier peak within ±200 Hz
     #   2. Set NCO frequency = -offset, mix y2 × conj(NCO) → carrier truly at DC
     #   3. Take real part as audio (linear demod, no envelope-detection harmonics)
-    #   4. Subtract slow DC, normalize by envelope-mean for stable gain
-    # Offline tests show +10 dB voice, -76 dB on the 6766 Hz harmonic that
-    # plagued envelope detection on KMOX, and +44 dB SNR improvement overall.
+    #   4. Per-sample EMA tracks slow C(t); audio = real_part − C; normalize by C
     nco_freq_hz = 0.0
     nco_phase = 0.0
     fft_acc = []
@@ -162,10 +191,19 @@ def main() -> int:
     fft_target_samples = OUT_RATE // 2  # 0.5 sec of post-filter data
     sample_period = 1.0 / OUT_RATE
 
+    # Per-sample EMAs over the channel-filtered signal. One tracks DC of
+    # real_part (= carrier amplitude C); the other tracks |y2| (= envelope
+    # magnitude). Both update sample-by-sample with a 3-second time constant
+    # so they reject anything in the voice band (≥50 Hz attenuated >60 dB).
+    # Splitting the two: using |y2| for the normalization denominator keeps
+    # it always-positive and bounded, so a transient PLL sign error or deep
+    # fade can't collapse the denominator to FLOOR and saturate the output.
     sig_amp = np.float32(0.01)
-    sig_alpha = np.float32(0.05)
-    audio_dc = np.float32(0.0)
+    sig_dc = np.float32(0.0)
     SIG_FLOOR = np.float32(0.001)
+    carrier_tau_s = 3.0
+    sample_alpha = np.float32(1.0 / (carrier_tau_s * OUT_RATE))
+    one_minus_alpha = np.float32(1.0 - sample_alpha)
     # 0.7 is loud enough that lightly-processed stations (KZYM 1220) are
     # audible without dynaudnorm doing heavy lifting. Heavily-processed stations
     # (KMOX 1120) may hit the soft clip on talk peaks — acceptable trade.
@@ -232,10 +270,11 @@ def main() -> int:
                     # Fall through to demod this block
                 else:
                     # Pre-lock: output envelope so the user hears something during the
-                    # ~0.5 s lock window (avoids a startup silence).
+                    # ~0.5 s lock window (avoids a startup silence). Block-rate
+                    # normalization is fine here — this path runs for <1 second.
                     env = np.abs(y2).astype(np.float32)
                     env_mean = np.float32(env.mean())
-                    sig_amp = (1 - sig_alpha) * sig_amp + sig_alpha * env_mean
+                    sig_amp = np.float32(0.95) * sig_amp + np.float32(0.05) * env_mean
                     audio = env - env_mean
                     scaled = np.clip(audio / max(sig_amp, SIG_FLOOR) * OUTPUT_SCALE, -1.0, 1.0)
                     pcm = (scaled * 30_000).astype(np.int16)
@@ -249,16 +288,27 @@ def main() -> int:
             mixed = (y2 * np.conj(local_nco)).astype(np.complex64)
             nco_phase = (nco_phase + 2 * np.pi * nco_freq_hz * sample_period * N) % (2 * np.pi)
 
-            # Demodulate: real part of de-rotated signal is C + m(t); subtract DC
+            # Per-sample tracking: sig_dc follows the carrier DC (= slow C(t)),
+            # sig_amp follows |y2| envelope magnitude (always positive). Audio
+            # is real_part − sig_dc; normalized by sig_amp. Doing both EMAs
+            # at sample rate (rather than block rate) means the gain applied
+            # to each sample varies smoothly instead of stepping at the 62.5 Hz
+            # block boundary — eliminates block-rate pumping in the output.
             real_part = mixed.real.astype(np.float32)
-            audio_dc = np.float32(0.98) * audio_dc + np.float32(0.02) * np.float32(real_part.mean())
-            audio = real_part - audio_dc
+            env_abs = np.abs(y2).astype(np.float32)
+            dc_track = np.empty(N, dtype=np.float32)
+            amp_track = np.empty(N, dtype=np.float32)
+            sd, sa = sig_dc, sig_amp
+            for n in range(N):
+                sd = one_minus_alpha * sd + sample_alpha * real_part[n]
+                sa = one_minus_alpha * sa + sample_alpha * env_abs[n]
+                dc_track[n] = sd
+                amp_track[n] = sa
+            sig_dc, sig_amp = sd, sa
 
-            # Amplitude tracking via envelope mean (robust to lock errors)
-            env_block_mean = np.float32(np.mean(np.abs(y2)))
-            sig_amp = (1 - sig_alpha) * sig_amp + sig_alpha * env_block_mean
-
-            scaled = np.clip(audio / max(sig_amp, SIG_FLOOR) * OUTPUT_SCALE, -1.0, 1.0)
+            audio = real_part - dc_track
+            denom = np.maximum(amp_track, SIG_FLOOR)
+            scaled = np.clip(audio / denom * OUTPUT_SCALE, -1.0, 1.0)
 
             pcm = (scaled * 30_000).astype(np.int16)
             stdout.write(pcm.tobytes())
