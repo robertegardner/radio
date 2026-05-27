@@ -55,6 +55,27 @@ HD mode always falls back to analog FM until nrsc5 gains SoapySDR support.
 - KMOX 1120 AM — Cardinals play-by-play (St. Louis, 50 kW clear-channel)
 - KZYM 1230 AM — local talk/sports (Cape Girardeau)
 
+## Known driver quirks
+
+- **`rfnotch_ctrl` is a broadcast-band notch, not an FM-only notch.** On
+  SoapySDRPlay3 v3.150000 + dx-R2, the `rfnotch_ctrl` setting (described
+  by the driver as `'RF Notch Filter Control'`) attenuates the MW
+  broadcast band by 30–44 dB when enabled. This contradicts both the
+  setting's name and its description. Leave `rfnotch_ctrl=false` for AM
+  listening. Verified by controlled spectrum scan 2026-05-27 — see
+  `am-debug-summary-20260527.md` and the `am-scan-20260527T143231-ctrl`,
+  `am-scan-20260527T144733-rf`, `am-scan-20260527T150235-dab` file sets
+  in `/var/lib/sdr-streams/diag/`. `am_stream.py` does not explicitly
+  write this key; cold-start verification confirmed the driver
+  initializes it to `false` even though `getSettingInfo()` reports
+  `default='true'`.
+
+- **`getSettingInfo().value` (metadata default) does not always match
+  the actual init value of a setting.** Observed for `rfnotch_ctrl` (meta
+  says `'true'`, real init is `'false'`). When the live state of a
+  setting matters, read it back with `readSetting()` after open — don't
+  trust the documented default.
+
 ## Where to find things
 
 Application code lives in `files/opt/sdr-tuner/`. On the Pi it deploys to

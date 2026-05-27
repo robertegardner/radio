@@ -53,6 +53,11 @@
   #scan-banner{background:#1a2942;border:1px solid #2563eb;color:#a8d0f0;
                padding:.75rem 1rem;border-radius:8px;margin-bottom:1rem;
                display:none;align-items:center;gap:.75rem;font-size:.95rem}
+  #rfi-banner{background:#3a2515;border:1px solid #c97a3a;color:#f0c8a8;
+              padding:.75rem 1rem;border-radius:8px;margin-bottom:1rem;
+              display:none;font-size:.9rem;line-height:1.4}
+  #rfi-banner .title{font-weight:600;margin-bottom:.25rem}
+  #rfi-banner .meta{color:#a89070;font-size:.8rem;margin-top:.3rem}
   .spinner{width:16px;height:16px;border:2px solid #2563eb;border-top-color:transparent;
            border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0}
   @keyframes spin{to{transform:rotate(360deg)}}
@@ -81,6 +86,12 @@
   <div class="spinner"></div>
   <div id="scan-msg">Scanning band — stream paused, station list will refresh when done.</div>
   <div id="scan-elapsed">0s</div>
+</div>
+
+<div id="rfi-banner">
+  <div class="title" id="rfi-title">RFI detected</div>
+  <div id="rfi-body"></div>
+  <div class="meta" id="rfi-meta"></div>
 </div>
 
 <div class="status">
@@ -318,5 +329,32 @@ async function updateScanStatus() {
 }
 setInterval(updateScanStatus, 2000);
 updateScanStatus();
+
+async function updateRfiBanner() {
+  let d;
+  try { d = await (await fetch('/api/rfi_status')).json(); }
+  catch (e) { return; }
+  const banner = document.getElementById('rfi-banner');
+  if (!d.available || !d.rfi_candidates || d.rfi_candidates.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+  const parts = d.rfi_candidates.map(
+    r => `${r.freq_khz} kHz (+${r.above_nf_db.toFixed(1)} dB above floor)`
+  );
+  document.getElementById('rfi-body').textContent =
+    'RFI detected: ' + parts.join(', ') + ' — see hardware/RFI_HUNT.md';
+  const meta = [];
+  if (d.noise_floor_db != null)
+    meta.push('noise floor ' + d.noise_floor_db.toFixed(1) + ' dB');
+  if (d.station_snr_db != null && d.tuned_freq_khz)
+    meta.push('tuned ' + d.tuned_freq_khz + ' kHz: SNR ' + d.station_snr_db.toFixed(1) + ' dB');
+  if (d.measured_at)
+    meta.push('measured ' + d.measured_at.slice(0, 19).replace('T', ' ') + 'Z');
+  document.getElementById('rfi-meta').textContent = meta.join(' · ');
+  banner.style.display = 'block';
+}
+setInterval(updateRfiBanner, 5000);
+updateRfiBanner();
 </script>
 </body></html>

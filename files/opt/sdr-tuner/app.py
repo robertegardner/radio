@@ -20,6 +20,7 @@ ENV_PATH         = Path("/etc/sdr-streams/active.env")
 NOW_PLAYING_PATH = Path("/run/sdr-streams/now_playing.json")
 CAPTIONS_PATH    = Path("/run/sdr-streams/captions.json")
 HD_STATUS_PATH   = Path("/run/sdr-streams/hd_status.json")
+RFI_STATUS_PATH  = Path("/run/sdr-streams/rfi_status.json")
 
 SERVICE          = "sdr-fm@active"
 SCAN_FM_SERVICE  = "sdr-scan.service"
@@ -105,7 +106,7 @@ def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0
 
 
 def clear_runtime_state():
-    for p in (NOW_PLAYING_PATH, CAPTIONS_PATH, HD_STATUS_PATH):
+    for p in (NOW_PLAYING_PATH, CAPTIONS_PATH, HD_STATUS_PATH, RFI_STATUS_PATH):
         try:
             p.unlink()
         except FileNotFoundError:
@@ -282,6 +283,18 @@ def api_scan_status():
         "fm_state": fm_state,
         "am_state": am_state,
     })
+
+
+@app.route("/api/rfi_status")
+def api_rfi_status():
+    # Written once per am_stream.py startup. Absent for FM/HD tunes or when
+    # the stream isn't running. UI banner only surfaces RFI when this file
+    # exists AND rfi_candidates is non-empty.
+    data = _load_json(RFI_STATUS_PATH)
+    if not data:
+        return jsonify({"available": False})
+    data["available"] = True
+    return jsonify(data)
 
 
 @app.route("/api/now_playing")

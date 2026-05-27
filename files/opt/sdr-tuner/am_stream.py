@@ -27,13 +27,18 @@ chain:
 
 Reads FREQ and GAIN from /etc/sdr-streams/active.env.
 """
+import json
 import signal
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import SoapySDR
 from SoapySDR import SOAPY_SDR_CS16, SOAPY_SDR_RX
+
+RFI_STATUS_PATH = Path("/run/sdr-streams/rfi_status.json")
 
 HW_RATE = 2_000_000
 # With HDR mode engaged the dx-R2's HDR signal path eliminates the DC spike
@@ -113,6 +118,120 @@ def conv_decim(x: np.ndarray, taps: np.ndarray, decim: int, hist: np.ndarray):
     return y[::decim], new_hist
 
 
+def startup_rfi_scan(sdr, rx, lo_freq_hz: float, target_freq_hz: float,
+                     duration_s: float = 5.0) -> None:
+    """Pre-streaming PSD measurement of the captured ±1 MHz band.
+
+    Logs the noise floor (median PSD of off-grid bins between AM 10 kHz
+    channels) and any off-grid bins more than 15 dB above that floor —
+    those are likely local RFI sources. Also logs the SNR at the tuned
+    station. Writes a JSON snapshot to RFI_STATUS_PATH for the admin UI
+    banner. Costs ~duration_s of startup latency but the journal record
+    of each restart's noise environment lets us spot RFI degradation
+    over time.
+    """
+    n_fft = 1024
+    read_block = n_fft * 16
+    raw = np.empty(read_block * 2, dtype=np.int16)
+    accum = np.zeros(n_fft, dtype=np.float64)
+    count = 0
+    win = np.hanning(n_fft).astype(np.float32)
+    win_pow = float((win * win).sum())
+
+    deadline = time.monotonic() + duration_s
+    sys.stderr.write(f"am_stream: noise-floor scan ({duration_s:.0f}s)…\n")
+    sys.stderr.flush()
+    while time.monotonic() < deadline:
+        sr = sdr.readStream(rx, [raw], read_block, timeoutUs=500_000)
+        if sr.ret <= 0:
+            continue
+        n = sr.ret
+        i = raw[0:2 * n:2].astype(np.float32) / 32768.0
+        q = raw[1:2 * n:2].astype(np.float32) / 32768.0
+        iq = (i + 1j * q).astype(np.complex64)
+        n_chunks = len(iq) // n_fft
+        for c in range(n_chunks):
+            chunk = iq[c * n_fft:(c + 1) * n_fft]
+            spec = np.fft.fft(chunk * win)
+            accum += np.abs(spec) ** 2 / win_pow
+            count += 1
+    if count == 0:
+        sys.stderr.write("am_stream: noise-floor scan got no samples, skipping\n")
+        sys.stderr.flush()
+        return
+
+    avg = accum / count
+    psd_shifted = np.fft.fftshift(avg)
+    freqs_hz = np.fft.fftshift(np.fft.fftfreq(n_fft, 1.0 / HW_RATE)) + lo_freq_hz
+    psd_db = 10.0 * np.log10(psd_shifted + 1e-20)
+
+    # Off-grid AM bin centers (between 10 kHz US channels). Take only those
+    # actually covered by the captured band.
+    band_lo = float(freqs_hz.min())
+    band_hi = float(freqs_hz.max())
+    off_grid: list[tuple[int, int]] = []
+    for c_khz in range(545, 1700, 10):
+        c_hz = c_khz * 1000.0
+        if c_hz < band_lo or c_hz > band_hi:
+            continue
+        idx = int(np.argmin(np.abs(freqs_hz - c_hz)))
+        off_grid.append((c_khz, idx))
+    if not off_grid:
+        sys.stderr.write("am_stream: no off-grid AM bins in captured band, skipping\n")
+        sys.stderr.flush()
+        return
+
+    levels = np.array([psd_db[i] for _, i in off_grid])
+    nf_median = float(np.median(levels))
+
+    rfi: list[dict] = []
+    for c_khz, idx in off_grid:
+        lvl = float(psd_db[idx])
+        if lvl > nf_median + 15.0:
+            rfi.append({
+                "freq_khz": c_khz,
+                "level_db": round(lvl, 2),
+                "above_nf_db": round(lvl - nf_median, 2),
+            })
+    rfi.sort(key=lambda r: -r["above_nf_db"])
+
+    target_idx = int(np.argmin(np.abs(freqs_hz - target_freq_hz)))
+    station_level = float(psd_db[target_idx])
+    station_snr = station_level - nf_median
+
+    sys.stderr.write(
+        f"am_stream: noise_floor_db={nf_median:.2f} "
+        f"station_level_db={station_level:.2f} station_snr_db={station_snr:.2f}\n"
+    )
+    if rfi:
+        sys.stderr.write(f"am_stream: {len(rfi)} RFI candidate(s) >15 dB above NF:\n")
+        for r in rfi[:6]:
+            sys.stderr.write(
+                f"am_stream:   {r['freq_khz']:>4} kHz: "
+                f"{r['level_db']:+.2f} dB (+{r['above_nf_db']:.2f} above NF)\n"
+            )
+    else:
+        sys.stderr.write("am_stream: no RFI candidates >15 dB above NF\n")
+    sys.stderr.flush()
+
+    status = {
+        "measured_at": datetime.now(timezone.utc).isoformat(),
+        "tuned_freq_khz": int(round(target_freq_hz / 1000)),
+        "noise_floor_db": round(nf_median, 2),
+        "station_level_db": round(station_level, 2),
+        "station_snr_db": round(station_snr, 2),
+        "rfi_candidates": rfi,
+    }
+    try:
+        RFI_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = RFI_STATUS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(status, indent=2))
+        tmp.replace(RFI_STATUS_PATH)
+    except OSError as e:
+        sys.stderr.write(f"am_stream: could not write {RFI_STATUS_PATH}: {e}\n")
+        sys.stderr.flush()
+
+
 def main() -> int:
     env = read_env()
     target_freq = parse_freq(env["FREQ"])
@@ -152,10 +271,52 @@ def main() -> int:
             mark = "ok" if got == want else "MISMATCH"
             sys.stderr.write(f"am_stream: {key}={got!r} (wanted {want!r}) [{mark}]\n")
 
-    sys.stderr.write(f"am_stream: actual gain = {sdr.getGain(SOAPY_SDR_RX, 0)}\n")
+    # Full SDR state dump. Anything the driver exposes via getSettingInfo() that
+    # we didn't explicitly write — log its current value so we can see defaults
+    # that may be biting us. Also dump achieved rate/freq/antenna/gain (driver
+    # may quantize/clamp what we asked for) and every per-element gain stage.
+    sys.stderr.write("am_stream: ---- SDR state ----\n")
+    sys.stderr.write(f"am_stream: driver={sdr.getDriverKey()} hw={sdr.getHardwareKey()}\n")
+    sys.stderr.write(
+        f"am_stream: antenna={sdr.getAntenna(SOAPY_SDR_RX, 0)!r} "
+        f"sample_rate={sdr.getSampleRate(SOAPY_SDR_RX, 0):.0f} "
+        f"freq={sdr.getFrequency(SOAPY_SDR_RX, 0):.0f} "
+        f"bw={sdr.getBandwidth(SOAPY_SDR_RX, 0):.0f}\n"
+    )
+    try:
+        agc_mode = sdr.getGainMode(SOAPY_SDR_RX, 0)
+    except Exception as e:
+        agc_mode = f"<err {e}>"
+    sys.stderr.write(
+        f"am_stream: total_gain={sdr.getGain(SOAPY_SDR_RX, 0):.2f} agc_mode={agc_mode}\n"
+    )
+    for elem in sdr.listGains(SOAPY_SDR_RX, 0):
+        try:
+            g = sdr.getGain(SOAPY_SDR_RX, 0, elem)
+            r = sdr.getGainRange(SOAPY_SDR_RX, 0, elem)
+            sys.stderr.write(
+                f"am_stream:   gain[{elem}]={g:.2f} dB (range [{r.minimum()}, {r.maximum()}])\n"
+            )
+        except Exception as e:
+            sys.stderr.write(f"am_stream:   gain[{elem}]: <err {e}>\n")
+    for info in sdr.getSettingInfo():
+        key = info.key
+        try:
+            val = sdr.readSetting(key)
+        except Exception as e:
+            val = f"<err {e}>"
+        sys.stderr.write(f"am_stream:   setting[{key}]={val!r} default={info.value!r}\n")
+    sys.stderr.write("am_stream: -------------------\n")
+    sys.stderr.flush()
 
     rx = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16)
     sdr.activateStream(rx)
+
+    # Pre-streaming RFI scan. ~5 s of latency before audio starts, but each
+    # restart fingerprints the noise environment in the journal and feeds the
+    # admin-UI RFI banner. Skipped for non-MW tunes (out-of-band coverage).
+    if target_freq < 30_000_000:
+        startup_rfi_scan(sdr, rx, lo_freq, target_freq)
 
     raw = np.empty(BLOCK_COMPLEX * 2, dtype=np.int16)
 
@@ -191,19 +352,16 @@ def main() -> int:
     fft_target_samples = OUT_RATE // 2  # 0.5 sec of post-filter data
     sample_period = 1.0 / OUT_RATE
 
-    # Per-sample EMAs over the channel-filtered signal. One tracks DC of
-    # real_part (= carrier amplitude C); the other tracks |y2| (= envelope
-    # magnitude). Both update sample-by-sample with a 3-second time constant
-    # so they reject anything in the voice band (≥50 Hz attenuated >60 dB).
-    # Splitting the two: using |y2| for the normalization denominator keeps
-    # it always-positive and bounded, so a transient PLL sign error or deep
-    # fade can't collapse the denominator to FLOOR and saturate the output.
+    # Block-rate normalization (the e45da31 version). The per-sample dual EMA
+    # from fab5b08 was reverted here during 2026-05-27 bisection, when the
+    # real root cause of "AM illegible" turned out to be local RFI swamping
+    # the noise floor (see /var/lib/sdr-streams/diag/am-debug-summary-20260527.md),
+    # not the normalization. Reintroducing per-sample EMA is a separate
+    # decision that should be made after the RFI environment is cleaned up.
     sig_amp = np.float32(0.01)
-    sig_dc = np.float32(0.0)
+    sig_alpha = np.float32(0.05)
+    audio_dc = np.float32(0.0)
     SIG_FLOOR = np.float32(0.001)
-    carrier_tau_s = 3.0
-    sample_alpha = np.float32(1.0 / (carrier_tau_s * OUT_RATE))
-    one_minus_alpha = np.float32(1.0 - sample_alpha)
     # 0.7 is loud enough that lightly-processed stations (KZYM 1220) are
     # audible without dynaudnorm doing heavy lifting. Heavily-processed stations
     # (KMOX 1120) may hit the soft clip on talk peaks — acceptable trade.
@@ -270,11 +428,10 @@ def main() -> int:
                     # Fall through to demod this block
                 else:
                     # Pre-lock: output envelope so the user hears something during the
-                    # ~0.5 s lock window (avoids a startup silence). Block-rate
-                    # normalization is fine here — this path runs for <1 second.
+                    # ~0.5 s lock window (avoids a startup silence).
                     env = np.abs(y2).astype(np.float32)
                     env_mean = np.float32(env.mean())
-                    sig_amp = np.float32(0.95) * sig_amp + np.float32(0.05) * env_mean
+                    sig_amp = (1 - sig_alpha) * sig_amp + sig_alpha * env_mean
                     audio = env - env_mean
                     scaled = np.clip(audio / max(sig_amp, SIG_FLOOR) * OUTPUT_SCALE, -1.0, 1.0)
                     pcm = (scaled * 30_000).astype(np.int16)
@@ -288,27 +445,15 @@ def main() -> int:
             mixed = (y2 * np.conj(local_nco)).astype(np.complex64)
             nco_phase = (nco_phase + 2 * np.pi * nco_freq_hz * sample_period * N) % (2 * np.pi)
 
-            # Per-sample tracking: sig_dc follows the carrier DC (= slow C(t)),
-            # sig_amp follows |y2| envelope magnitude (always positive). Audio
-            # is real_part − sig_dc; normalized by sig_amp. Doing both EMAs
-            # at sample rate (rather than block rate) means the gain applied
-            # to each sample varies smoothly instead of stepping at the 62.5 Hz
-            # block boundary — eliminates block-rate pumping in the output.
+            # Demodulate: real part of de-rotated signal is C + m(t); subtract DC
             real_part = mixed.real.astype(np.float32)
-            env_abs = np.abs(y2).astype(np.float32)
-            dc_track = np.empty(N, dtype=np.float32)
-            amp_track = np.empty(N, dtype=np.float32)
-            sd, sa = sig_dc, sig_amp
-            for n in range(N):
-                sd = one_minus_alpha * sd + sample_alpha * real_part[n]
-                sa = one_minus_alpha * sa + sample_alpha * env_abs[n]
-                dc_track[n] = sd
-                amp_track[n] = sa
-            sig_dc, sig_amp = sd, sa
+            audio_dc = np.float32(0.98) * audio_dc + np.float32(0.02) * np.float32(real_part.mean())
+            audio = real_part - audio_dc
 
-            audio = real_part - dc_track
-            denom = np.maximum(amp_track, SIG_FLOOR)
-            scaled = np.clip(audio / denom * OUTPUT_SCALE, -1.0, 1.0)
+            # Amplitude tracking via envelope mean (robust to lock errors)
+            env_block_mean = np.float32(np.mean(np.abs(y2)))
+            sig_amp = (1 - sig_alpha) * sig_amp + sig_alpha * env_block_mean
+            scaled = np.clip(audio / max(sig_amp, SIG_FLOOR) * OUTPUT_SCALE, -1.0, 1.0)
 
             pcm = (scaled * 30_000).astype(np.int16)
             stdout.write(pcm.tobytes())
