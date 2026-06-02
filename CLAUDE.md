@@ -247,8 +247,17 @@ Token-authenticated; the Pi has the matching token in `/etc/sdr-streams/captions
 This is outside the Pi's git checkout — those scripts are kept in the repo
 purely for backup/disaster recovery.
 
+The live deploy directory on the GPU host is `/opt/whisper-svc/` (its own
+copy — NOT synced from this repo). It holds a `.env` with the real
+`WHISPER_TOKEN` and a `docker-compose.yml` that runs **`medium.en`** (the
+repo defaults match this as of 2026-06-02). Redeploy = ssh to the host and
+`cd /opt/whisper-svc && docker compose up -d --build`. If you change the
+service code, scp the updated files from `scripts/whisper-svc/` into that
+dir first, then rebuild. See CLAUDE.local.md for the host's name/login.
+
 If captions stop working, first check is `curl http://gpu-host:8088/health`
-from the Pi.
+from the Pi. A 401/422 on `/transcribe` without a body is normal (FastAPI
+validates the required audio file before the token check).
 
 ## Known issues and open work
 
