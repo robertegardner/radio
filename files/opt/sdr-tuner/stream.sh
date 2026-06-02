@@ -17,7 +17,10 @@ if [[ "$MODE" == "hd" ]]; then
 
 elif [[ "$MODE" == "wbfm" || "$MODE" == "fm" ]]; then
   # FM with RDS: 250k output → 2 MSps hardware (8× oversampling, supported by dx-R2). Antenna A = FM.
-  exec bash -c "rx_fm -d 'driver=sdrplay' -a 'Antenna A' -M fm -l 0 -A std -s 250000 -g ${GAIN} -f ${FREQ} -F 9 - | \
+  # rx_fm's stderr is routed through device_loss_guard.sh: this rx_fm build loops
+  # "Device has been removed." forever instead of exiting on SDRplay USB loss, so
+  # the guard kills this shell ($$) to let systemd (Restart=always) recover us.
+  exec bash -c "rx_fm -d 'driver=sdrplay' -a 'Antenna A' -M fm -l 0 -A std -s 250000 -g ${GAIN} -f ${FREQ} -F 9 - 2> >(/opt/sdr-tuner/device_loss_guard.sh \$\$) | \
     tee >(redsea -r 250000 --output json 2>/dev/null | FREQ='${FREQ}' /opt/sdr-tuner/rds_watcher.py) | \
     ffmpeg -hide_banner -loglevel warning -f s16le -ar 250000 -ac 1 -i - \
            -af 'aemphasis=mode=reproduction:type=75fm,lowpass=15000' \
