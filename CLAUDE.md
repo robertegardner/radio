@@ -252,6 +252,25 @@ from the Pi.
 
 ## Known issues and open work
 
+### The scanner project steals the SDRplay (and the FM self-heal for it)
+
+The sibling **scanner** project (`/srv/scanner`) runs SDRTrunk for MOSWIN P25 on
+its own Nooelec dongle — but on startup SDRTrunk loads `libsdrplay_api.so` and
+**enumerates our RSPdx-R2** (just to disable it), which knocks our `rx_fm` off the
+device: `[ERROR] Device has been removed. Stopping.`. Two fixes, both verified
+2026-06-02 (radio + MOSWIN now run simultaneously):
+
+- **Coexistence (lives in the scanner's bootstrap.sh):** `/usr/local/lib/libsdrplay_api.so*`
+  is restricted to `root:radio 750` so the scanner user can't load it and SDRTrunk
+  skips the RSP; we (user `radio`, group `radio`) keep access. **Re-apply after any
+  SDRplay API reinstall** — it resets perms to 644 and the conflict returns.
+- **Self-heal (this repo, `device_loss_guard.sh`):** this rx_fm build loops the
+  "Device has been removed" error forever instead of exiting, so `sdr-fm@.service`'s
+  `Restart=always` never fired. The fm/wbfm branch of `stream.sh` now pipes rx_fm's
+  stderr through `device_loss_guard.sh`, which SIGTERMs the service main PID on the
+  marker so systemd restarts and re-acquires the device. Covers transient USB
+  losses too. (AM/`am_stream.py` and HD are Python and exit on error already.)
+
 ### HD Radio field notes
 
 Tested 2026-05-13. Cape Girardeau, MO is a small market with no HD Radio
