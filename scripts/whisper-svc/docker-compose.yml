@@ -6,7 +6,7 @@ services:
     ports:
       - "8088:8000"
     environment:
-      WHISPER_MODEL: small.en
+      WHISPER_MODEL: medium.en
       WHISPER_DEVICE: cuda
       WHISPER_COMPUTE: float16
       WHISPER_TOKEN: ${WHISPER_TOKEN:?set me}
