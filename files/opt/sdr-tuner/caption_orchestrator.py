@@ -31,7 +31,7 @@ RDS_OFFSET_MS  = int(os.environ.get("RDS_OFFSET_MS",     "5000"))
 SAMPLE_RATE          = 16000
 CHANNELS             = 1
 BYTES_PER_SAMPLE     = 2
-WHISPER_WINDOW_SEC   = 6
+WHISPER_WINDOW_SEC   = 10      # longer window -> more context, better recall on sung vocals
 FINGERPRINT_EVERY    = 25
 FINGERPRINT_DUR_SEC  = 20      # longer sample -> more robust fingerprint on FM
 RDS_POLL_SEC         = 2
@@ -109,6 +109,20 @@ ring = Ring(RING_SEC)
 transcript_buf = collections.deque(maxlen=16)
 transcript_lock = threading.Lock()
 
+# Whisper hallucinates stock phrases on non-speech audio (instrumental breaks,
+# music beds). These pollute both the caption display and the lyric-ID query, so
+# we drop them outright.
+_HALLUCINATIONS = {
+    "", "you", "thank you", "thanks", "thanks for watching",
+    "thank you for watching", "please subscribe", "subscribe",
+    "bye", "bye bye", "okay", "ok", "so", "yeah",
+    "subtitles by the amara.org community", "transcription by castingwords",
+}
+
+
+def is_hallucination(text):
+    return text.strip().lower().strip(" .!?,-") in _HALLUCINATIONS
+
 
 def reader_loop():
     while True:
@@ -160,8 +174,8 @@ def transcribe_loop():
         except requests.RequestException as e:
             print(f"[whisper] {e}", file=sys.stderr)
             continue
-        if not text:
-            continue
+        if not text or is_hallucination(text):
+            continue  # skip empties + non-speech hallucinations (don't pollute captions/lyric query)
         with slock:
             state["caption_text"]    = text
             state["caption_updated"] = time.time()
