@@ -188,17 +188,52 @@ def parse_lrc(synced):
     return lines
 
 
+_art_cache = {}
+
+
+def fetch_art(artist, title):
+    """Best-effort cover art + album for a track, via the iTunes Search API
+    (no key needed). Returns (art_url, album) or (None, None). Cached by track
+    so we don't re-hit the network on every re-match of the same song."""
+    key = f"{artist}\t{title}"
+    if key in _art_cache:
+        return _art_cache[key]
+    art_url = album = None
+    try:
+        r = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": f"{artist} {title}", "media": "music",
+                    "entity": "song", "limit": 1},
+            timeout=8, headers={"User-Agent": "sdr-tuner/1.0"})
+        if r.ok:
+            results = r.json().get("results") or []
+            if results:
+                raw = results[0].get("artworkUrl100")
+                if raw:
+                    # iTunes returns a 100px thumb; request a larger render.
+                    art_url = raw.replace("100x100bb", "600x600bb")
+                album = results[0].get("collectionName")
+    except (requests.RequestException, ValueError) as e:
+        print(f"[art] {e}", file=sys.stderr)
+    _art_cache[key] = (art_url, album)
+    return art_url, album
+
+
 def apply_song(artist, title, duration, source, score=None):
     lrc = lrclib_get(artist, title, duration)
     lines = parse_lrc(lrc.get("syncedLyrics")) if lrc else []
     has_lyrics = bool(lines)
+    art_url, album = fetch_art(artist, title)
     print(f"[match:{source}] {artist} - {title} "
-          f"(score={score}, lyrics={'yes' if has_lyrics else 'no'})",
+          f"(score={score}, lyrics={'yes' if has_lyrics else 'no'}, "
+          f"art={'yes' if art_url else 'no'})",
           file=sys.stderr)
     with slock:
         state["song"] = {
             "artist":     artist,
             "title":      title,
+            "album":      album,
+            "art_url":    art_url,
             "duration":   duration or (lrc.get("duration") if lrc else None),
             "matched_at": time.time(),
             "source":     source,

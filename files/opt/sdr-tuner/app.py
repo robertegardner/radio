@@ -313,6 +313,12 @@ def api_now_playing():
     elif freq and band == "am":
         station_info = station_db.lookup_am(freq)
 
+    # Discrete now-playing track for client consumption: the identified song
+    # (RDS or AcoustID) plus server-fetched cover art. Null when nothing is
+    # identified (e.g. talk content). Mirrors lyrics.song, which is retained
+    # for the existing web UI.
+    song = cap.get("song")
+
     return jsonify({
         "available":      bool(rds) or bool(cap) or bool(station_info),
         "rds":            rds,
@@ -325,13 +331,14 @@ def api_now_playing():
         "hd_locked":      hd_state.get("hd_locked", False),
         "hd_unavailable": hd_state.get("hd_unavailable", False),
         "mode":      cap.get("mode", "idle"),
+        "track":     song,
         "caption": {
             "text":    cap.get("caption_text", ""),
             "updated": caption_updated,
             "age_s":   age_s,
         },
         "lyrics": {
-            "song":  cap.get("song"),
+            "song":  song,
             "lines": cap.get("lyrics_lines", []),
             "index": cap.get("lyrics_index", -1),
         },
