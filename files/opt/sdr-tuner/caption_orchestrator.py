@@ -12,7 +12,7 @@ Captions:
   - Continuously sends short PCM chunks from local Icecast to a remote Whisper
     service. Captions are suppressed while in lyrics mode.
 """
-import json, os, re, subprocess, sys, tempfile, threading, time, wave
+import collections, json, os, re, subprocess, sys, tempfile, threading, time, wave
 from pathlib import Path
 
 import requests
@@ -21,6 +21,7 @@ ICECAST_URL    = os.environ["ICECAST_URL"]
 WHISPER_URL    = os.environ["WHISPER_URL"]
 WHISPER_TOKEN  = os.environ["WHISPER_TOKEN"]
 ACOUSTID_KEY   = os.environ.get("ACOUSTID_KEY", "")
+GENIUS_TOKEN   = os.environ.get("GENIUS_TOKEN", "")
 STATE_PATH     = Path(os.environ["STATE_PATH"])
 NOW_PLAYING    = Path(os.environ.get("NOW_PLAYING_PATH",
                        "/run/sdr-streams/now_playing.json"))
@@ -45,6 +46,13 @@ CONF_RDS             = 1.0     # station-provided artist/title is authoritative
 CONF_LYRICS          = 0.70    # Whisper transcript -> lyric search (when enabled)
 ACOUSTID_FLOOR       = 0.50    # accept fingerprints >= this (was a hard 0.6 cut)
 ACOUSTID_GOOD        = 0.85    # at/above this we stop re-fingerprinting to upgrade
+
+# Lyric-based ID: Whisper transcript -> Genius search -> LRClib verification.
+LYRIC_ID_EVERY       = 15      # seconds between lyric-ID attempts
+LYRIC_WINDOW_SEC     = 45      # how much recent transcript to consider
+LYRIC_MIN_WORDS      = 6       # need at least this much transcript to bother
+LYRIC_QUERY_WORDS    = 20      # most-recent words used as the Genius query
+LYRIC_VERIFY_MIN     = 0.15    # min transcript/lyrics trigram overlap to trust a hit
 
 state = {
     "mode": "idle",
@@ -96,6 +104,10 @@ class Ring:
             return bytes(self.buf[-n:]) if len(self.buf) >= n else None
 
 ring = Ring(RING_SEC)
+
+# Rolling Whisper transcript (timestamp, text) for lyric-based identification.
+transcript_buf = collections.deque(maxlen=16)
+transcript_lock = threading.Lock()
 
 
 def reader_loop():
@@ -156,6 +168,8 @@ def transcribe_loop():
             if state["mode"] == "idle":
                 state["mode"] = "captions"
         write_state()
+        with transcript_lock:
+            transcript_buf.append((time.time(), text))
 
 
 def lrclib_get(artist, title, duration=None):
@@ -227,6 +241,74 @@ def fetch_art(artist, title):
         print(f"[art] {e}", file=sys.stderr)
     _art_cache[key] = (art_url, album)
     return art_url, album
+
+
+# ---------------------------------------------------------------------------
+# Lyric-based identification (Whisper transcript -> Genius -> LRClib verify)
+# ---------------------------------------------------------------------------
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _words(s):
+    return _WORD_RE.findall((s or "").lower())
+
+
+def _trigrams(words):
+    return {tuple(words[i:i + 3]) for i in range(len(words) - 2)}
+
+
+def recent_transcript():
+    """Recent Whisper transcript within LYRIC_WINDOW_SEC, consecutive dups dropped."""
+    cutoff = time.time() - LYRIC_WINDOW_SEC
+    with transcript_lock:
+        texts = [t for (ts, t) in transcript_buf if ts >= cutoff]
+    out = []
+    for t in texts:
+        if not out or out[-1] != t:
+            out.append(t)
+    return " ".join(out).strip()
+
+
+def lyrics_overlap(transcript, lyrics):
+    """Fraction of the transcript's word-trigrams that appear in the candidate
+    song's lyrics — our guard against Whisper-mishears matching the wrong song."""
+    tg = _trigrams(_words(transcript))
+    if not tg:
+        return 0.0
+    lg = _trigrams(_words(lyrics))
+    if not lg:
+        return 0.0
+    return len(tg & lg) / len(tg)
+
+
+def genius_search(query):
+    if not GENIUS_TOKEN:
+        return None
+    try:
+        r = requests.get(
+            "https://api.genius.com/search",
+            params={"q": query}, timeout=10,
+            headers={"Authorization": f"Bearer {GENIUS_TOKEN}",
+                     "User-Agent": "sdr-tuner/1.0"})
+    except requests.RequestException as e:
+        print(f"[genius] {e}", file=sys.stderr)
+        return None
+    if not r.ok:
+        print(f"[genius] HTTP {r.status_code}", file=sys.stderr)
+        return None
+    try:
+        hits = r.json().get("response", {}).get("hits", [])
+    except ValueError:
+        return None
+    for h in hits:
+        if h.get("type") != "song":
+            continue
+        res = h.get("result") or {}
+        artist = (res.get("primary_artist") or {}).get("name")
+        title = res.get("title")
+        if artist and title:
+            return artist.strip(), title.strip()
+    return None
 
 
 def _song_key(artist, title):
@@ -443,6 +525,48 @@ def fingerprint_loop():
             print(f"[fingerprint] {e}", file=sys.stderr)
 
 
+def lyric_id_loop():
+    """Identify the song from the Whisper transcript when nothing better has.
+    Genius finds a candidate; LRClib lyrics verify it before we trust it."""
+    if not GENIUS_TOKEN:
+        print("[lyric] disabled (no GENIUS_TOKEN)", file=sys.stderr)
+        return
+    while True:
+        time.sleep(LYRIC_ID_EVERY)
+        now = time.time()
+        with slock:
+            song = state.get("song")
+            conf = song.get("confidence", 0.0) if song else 0.0
+            stale = bool(song and song.get("duration")) and \
+                (now - song.get("matched_at", 0.0)) > (song.get("duration") or 0)
+        # Already have an ID at least as good as a lyric match, and it's not
+        # past its length (i.e. probably still the same song) -> nothing to do.
+        if song and conf >= CONF_LYRICS and not stale:
+            continue
+
+        transcript = recent_transcript()
+        words = _words(transcript)
+        if len(words) < LYRIC_MIN_WORDS:
+            continue
+        cand = genius_search(" ".join(words[-LYRIC_QUERY_WORDS:]))
+        if not cand:
+            continue
+        artist, title = cand
+
+        lrc = lrclib_get(artist, title)
+        lyrics_text = (lrc.get("plainLyrics") or lrc.get("syncedLyrics") or "") if lrc else ""
+        ov = lyrics_overlap(transcript, lyrics_text) if lyrics_text else 0.0
+        if ov < LYRIC_VERIFY_MIN:
+            print(f"[lyric] unverified {artist} - {title} (overlap={ov:.2f})", file=sys.stderr)
+            continue
+        print(f"[lyric] verified {artist} - {title} (overlap={ov:.2f})", file=sys.stderr)
+        try:
+            consider(artist, title, source="lyrics", confidence=CONF_LYRICS,
+                     duration=lrc.get("duration") if lrc else None)
+        except Exception as e:
+            print(f"[lyric] {e}", file=sys.stderr)
+
+
 def lyrics_tick_loop():
     while True:
         time.sleep(0.4)
@@ -485,6 +609,8 @@ def tune_watcher_loop():
             reset_song()
             with slock:
                 state["caption_text"] = ""
+            with transcript_lock:
+                transcript_buf.clear()   # stale transcript would misidentify the new station
             write_state()
         last_seen = exists
 
@@ -496,6 +622,7 @@ def main():
         threading.Thread(target=transcribe_loop,    daemon=True),
         threading.Thread(target=rds_lyrics_loop,    daemon=True),
         threading.Thread(target=fingerprint_loop,   daemon=True),
+        threading.Thread(target=lyric_id_loop,      daemon=True),
         threading.Thread(target=lyrics_tick_loop,   daemon=True),
         threading.Thread(target=tune_watcher_loop,  daemon=True),
     ]
