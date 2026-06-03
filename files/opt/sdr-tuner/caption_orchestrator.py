@@ -32,9 +32,19 @@ CHANNELS             = 1
 BYTES_PER_SAMPLE     = 2
 WHISPER_WINDOW_SEC   = 6
 FINGERPRINT_EVERY    = 25
-FINGERPRINT_DUR_SEC  = 15
+FINGERPRINT_DUR_SEC  = 20      # longer sample -> more robust fingerprint on FM
 RDS_POLL_SEC         = 2
 RING_SEC             = 60
+
+# Confidence-ranked identification. A candidate replaces what we show only when
+# it improves on it: a higher-confidence read of the same song (upgrade) or a
+# stronger / non-stale different song. So RDS (authoritative) is never clobbered
+# by a weaker fingerprint guess, while weak guesses get corrected as better data
+# arrives.
+CONF_RDS             = 1.0     # station-provided artist/title is authoritative
+CONF_LYRICS          = 0.70    # Whisper transcript -> lyric search (when enabled)
+ACOUSTID_FLOOR       = 0.50    # accept fingerprints >= this (was a hard 0.6 cut)
+ACOUSTID_GOOD        = 0.85    # at/above this we stop re-fingerprinting to upgrade
 
 state = {
     "mode": "idle",
@@ -219,13 +229,53 @@ def fetch_art(artist, title):
     return art_url, album
 
 
-def apply_song(artist, title, duration, source, score=None):
+def _song_key(artist, title):
+    return ((artist or "").strip().lower(), (title or "").strip().lower())
+
+
+def consider(artist, title, source, confidence, duration=None, score=None):
+    """Confidence-ranked resolver — the single entry point every identification
+    source funnels through. Decides whether a candidate should replace what we
+    currently show:
+
+      - same song, higher confidence  -> upgrade in place (keeps lyrics running)
+      - different song, higher confidence or current one is stale (past its
+        duration) -> switch
+      - otherwise -> ignore (weaker than what we already have)
+
+    This lets sources run continuously and the answer improve as better data
+    arrives, without a weak guess clobbering a strong one (e.g. RDS at 1.0).
+    """
+    artist, title = (artist or "").strip(), (title or "").strip()
+    if not (artist and title):
+        return
+    now = time.time()
+    with slock:
+        cur = state.get("song")
+        cur_key  = _song_key(cur.get("artist"), cur.get("title")) if cur else None
+        cur_conf = cur.get("confidence", 0.0) if cur else 0.0
+        cur_at   = cur.get("matched_at", 0.0) if cur else 0.0
+        cur_dur  = cur.get("duration") if cur else None
+    cand_key = _song_key(artist, title)
+
+    if cur_key == cand_key:
+        if confidence > cur_conf:
+            _upgrade_same(artist, title, source, score, confidence)
+        return
+    stale = bool(cur_dur) and (now - cur_at) > cur_dur
+    if cur_key is None or stale or confidence > cur_conf:
+        _apply_new(artist, title, duration, source, score, confidence)
+
+
+def _apply_new(artist, title, duration, source, score, confidence):
+    """Full match for a newly-identified song: synced lyrics + cover art."""
     lrc = lrclib_get(artist, title, duration)
     lines = parse_lrc(lrc.get("syncedLyrics")) if lrc else []
     has_lyrics = bool(lines)
     art_url, album = fetch_art(artist, title)
     print(f"[match:{source}] {artist} - {title} "
-          f"(score={score}, lyrics={'yes' if has_lyrics else 'no'}, "
+          f"(conf={confidence:.2f}, score={score}, "
+          f"lyrics={'yes' if has_lyrics else 'no'}, "
           f"art={'yes' if art_url else 'no'})",
           file=sys.stderr)
     with slock:
@@ -238,6 +288,7 @@ def apply_song(artist, title, duration, source, score=None):
             "matched_at": time.time(),
             "source":     source,
             "score":      score,
+            "confidence": confidence,
         }
         state["lyrics_lines"] = lines
         state["lyrics_index"] = -1
@@ -248,7 +299,31 @@ def apply_song(artist, title, duration, source, score=None):
         else:
             state["mode"] = "idle"
     write_state()
-    return True
+
+
+def _upgrade_same(artist, title, source, score, confidence):
+    """Raise confidence/source for the song we're already showing (e.g. RDS
+    confirming a fingerprint guess). Fills in cover art if we didn't have it.
+    Does not disturb the running lyrics."""
+    with slock:
+        cur = state.get("song")
+        need_art = bool(cur) and not cur.get("art_url")
+    art_url = album = None
+    if need_art:
+        art_url, album = fetch_art(artist, title)
+    print(f"[upgrade:{source}] {artist} - {title} conf={confidence:.2f}", file=sys.stderr)
+    with slock:
+        cur = state.get("song")
+        if not cur or _song_key(cur.get("artist"), cur.get("title")) != _song_key(artist, title):
+            return  # song changed underneath us
+        cur["source"]     = source
+        cur["score"]      = score
+        cur["confidence"] = confidence
+        if art_url and not cur.get("art_url"):
+            cur["art_url"] = art_url
+            if album:
+                cur["album"] = album
+    write_state()
 
 
 def rds_lyrics_loop():
@@ -266,13 +341,8 @@ def rds_lyrics_loop():
         if (artist, title) == last_seen:
             continue
         last_seen = (artist, title)
-        with slock:
-            cur = state.get("song") or {}
-            same = (cur.get("artist") == artist and cur.get("title") == title)
-        if same:
-            continue
         try:
-            apply_song(artist, title, duration=None, source="rds", score=None)
+            consider(artist, title, source="rds", confidence=CONF_RDS)
         except Exception as e:
             print(f"[rds_lyrics] {e}", file=sys.stderr)
 
@@ -335,10 +405,12 @@ def fingerprint_loop():
         with slock:
             song = state.get("song")
         if song:
-            elapsed = time.time() - song["matched_at"]
-            if song.get("duration") and elapsed < song["duration"] - 30:
-                continue
-            if song.get("source") == "rds" and elapsed < 60:
+            elapsed  = time.time() - song["matched_at"]
+            conf     = song.get("confidence", 0.0)
+            near_end = bool(song.get("duration")) and elapsed >= song["duration"] - 30
+            # Rest only when we already have a solid ID that isn't ending. A
+            # low-confidence ID keeps getting re-fingerprinted to improve it.
+            if conf >= ACOUSTID_GOOD and not near_end:
                 continue
 
         pcm = ring.last(FINGERPRINT_DUR_SEC)
@@ -356,16 +428,17 @@ def fingerprint_loop():
         match = acoustid_lookup(fp.get("duration"), fp.get("fingerprint"))
         if not match:
             continue
-        if match["score"] < 0.6:
+        if match["score"] < ACOUSTID_FLOOR:
             print(f"[acoustid] low score {match['score']:.2f} for "
                   f"{match['artist']} - {match['title']}, ignoring",
                   file=sys.stderr)
             continue
         try:
-            apply_song(match["artist"], match["title"],
-                       duration=match.get("duration"),
-                       source="acoustid",
-                       score=match["score"])
+            consider(match["artist"], match["title"],
+                     source="acoustid",
+                     confidence=match["score"],
+                     duration=match.get("duration"),
+                     score=match["score"])
         except Exception as e:
             print(f"[fingerprint] {e}", file=sys.stderr)
 
