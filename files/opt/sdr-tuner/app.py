@@ -5,8 +5,10 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+import requests
+from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
 
 import station_db
 import ui_settings
@@ -282,6 +284,29 @@ def api_status():
         "status":            is_active(SERVICE),
         "bitrate":           current_bitrate(),
     })
+
+
+@app.route("/api/art")
+def api_art():
+    """Same-origin proxy for album-art images. The radio page loads cover art
+    through here instead of hitting Apple's mzstatic CDN directly, which can be
+    blocked/slow/TLS-inspected on remote or corporate networks even when the
+    site itself loads. Host-allowlisted to mzstatic to avoid an open proxy."""
+    url = request.args.get("u", "")
+    host = urlparse(url).netloc.lower().split(":")[0]
+    if urlparse(url).scheme != "https" or not (
+            host == "mzstatic.com" or host.endswith(".mzstatic.com")):
+        return "forbidden", 403
+    try:
+        r = requests.get(url, timeout=8, headers={"User-Agent": "sdr-tuner/1.0"})
+    except requests.RequestException as e:
+        app.logger.warning("art proxy fetch failed: %s", e)
+        return "upstream error", 502
+    if not r.ok:
+        return "upstream error", 502
+    resp = Response(r.content, mimetype=r.headers.get("Content-Type", "image/jpeg"))
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 
 @app.route("/api/scan_status")

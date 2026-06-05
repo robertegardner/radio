@@ -15,6 +15,13 @@ state = {
     "last_update": time.time(),
 }
 
+# RadioText arrives in segments, so a song change briefly shows a half-assembled
+# or scrolling frame ("Metallica - Nothi") before it settles. Require a new RT
+# to hold steady this long before we trust it enough to parse artist/title.
+# (RT+ structured tags are exact and committed immediately, bypassing this.)
+RT_SETTLE_SEC = 3.0
+pending_rt = {"text": None, "since": 0.0}
+
 
 def write_state():
     state["last_update"] = time.time()
@@ -94,12 +101,20 @@ for line in sys.stdin:
             changed = True
 
     rt = rec.get("rt") or rec.get("radiotext")
-    if rt and rt.strip() and state.get("rt") != rt.strip():
-        state["rt"] = rt.strip()
-        a, t = parse_rt(rt)
-        state["artist"] = a
-        state["title"]  = t
-        changed = True
+    rt = rt.strip() if rt else ""
+    if rt and state.get("rt") != rt:
+        now = time.time()
+        if rt != pending_rt["text"]:
+            # New candidate RadioText — start its settle timer.
+            pending_rt["text"], pending_rt["since"] = rt, now
+        elif now - pending_rt["since"] >= RT_SETTLE_SEC:
+            # Held steady long enough — trust it.
+            state["rt"] = rt
+            a, t = parse_rt(rt)
+            state["artist"] = a
+            state["title"]  = t
+            pending_rt["text"] = None
+            changed = True
 
     rtplus = rec.get("radiotext_plus") or rec.get("rt_plus")
     if rtplus:

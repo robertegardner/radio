@@ -34,6 +34,35 @@
     padding: 1rem;
     user-select: none;
   }
+
+  /* Album art in the LCD panel (layout C): a crisp cover tile beside the
+     station info, plus a blurred wash of the same cover tinting the panel. */
+  .art-wash {
+    position: absolute; inset: -12%; z-index: 0; pointer-events: none;
+    background-size: cover; background-position: center;
+    filter: blur(34px) saturate(1.6) brightness(.7);
+    opacity: 0; transition: opacity .8s ease;
+  }
+  .lcd.has-art .art-wash { opacity: .7; }
+  .lcd.has-art::after {                 /* readability scrim over the wash */
+    content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+    background: radial-gradient(circle at 30% 35%,
+                  rgba(13,14,16,.4) 0%, rgba(13,14,16,.82) 100%);
+  }
+  .lcd-row, .lcd-main { position: relative; z-index: 2; }   /* content above wash+scrim */
+  .lcd-main { display: flex; gap: .9rem; align-items: center; margin-top: .5rem; }
+  .lcd-info { flex: 1 1 auto; min-width: 0; }
+  .lcd-cover {
+    display: none;                      /* only present when art is available */
+    flex: none; width: 116px; height: 116px; border-radius: 8px;
+    background: #222 center/cover no-repeat;
+    box-shadow: 0 4px 14px rgba(0,0,0,.5);
+    border: 1px solid rgba(255,255,255,.08);
+  }
+  .lcd.has-art .lcd-cover { display: block; }
+  @media (prefers-reduced-motion: reduce) {
+    .art-wash { transition: none; }
+  }
   .stereo {
     width: 100%; max-width: 600px;
     background: linear-gradient(180deg, #1a1c22 0%, var(--bg-panel) 100%);
@@ -53,6 +82,7 @@
     padding: 1rem 1.25rem;
     box-shadow: inset 0 2px 8px rgba(0,0,0,.7);
     position: relative;
+    overflow: hidden;            /* clip the blurred art wash to the panel */
     min-height: 130px;
   }
   .lcd-row { display: flex; justify-content: space-between; align-items: baseline; }
@@ -112,11 +142,26 @@
   }
   .lcd-call .city { color: var(--text-dim); font-weight: 400; font-size: .85rem; }
   .lcd-track {
-    color: #a8d0f0; font-size: .9rem;
+    display: flex; align-items: center; gap: .5rem;
     margin-top: .25rem; min-height: 1.3em;
+  }
+  #track-display {
+    color: #a8d0f0; font-size: .9rem;
+    flex: 1 1 auto; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .lcd-track:empty::before { content: "—"; color: var(--text-faint); }
+  #track-display:empty::before { content: "—"; color: var(--text-faint); }
+  /* Provenance badge: which pipeline identified the current artist/title. */
+  .track-src {
+    flex: none;
+    font-family: 'Courier New', monospace;
+    font-size: .58rem; font-weight: 700; letter-spacing: .08em;
+    padding: .1rem .4rem; border-radius: 4px;
+    border: 1px solid currentColor; opacity: .9;
+  }
+  .track-src.src-rds      { color: var(--amber); }
+  .track-src.src-lyrics   { color: #7ec8ff; }
+  .track-src.src-acoustid { color: #b48cff; }
 
   /* Presets */
   .presets-label {
@@ -346,7 +391,9 @@
 
 <div class="stereo">
   <!-- LCD display -->
-  <div class="lcd">
+  <div class="lcd" id="lcd">
+    <!-- Blurred wash of the current cover, tinting the panel (layout C). -->
+    <div class="art-wash" id="art-wash"></div>
     <div class="lcd-row">
       <div class="lcd-band">
         <span id="band-fm">FM</span>
@@ -360,9 +407,18 @@
       </div>
     </div>
 
-    <div class="lcd-freq" id="freq-display" title="Tap to direct tune">---.-<span class="unit" id="unit">MHz</span></div>
-    <div class="lcd-call" id="call-display">—</div>
-    <div class="lcd-track" id="track-display"></div>
+    <div class="lcd-main">
+      <!-- Crisp album cover tile (shown only when art is available). -->
+      <div class="lcd-cover" id="lcd-cover"></div>
+      <div class="lcd-info">
+        <div class="lcd-freq" id="freq-display" title="Tap to direct tune">---.-<span class="unit" id="unit">MHz</span></div>
+        <div class="lcd-call" id="call-display">—</div>
+        <div class="lcd-track">
+          <span id="track-display"></span>
+          <span class="track-src" id="track-src" style="display:none"></span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Presets -->
@@ -483,6 +539,7 @@ let presets    = loadPresets();
 let isPlaying  = false;
 let modalBand  = 'fm';
 let currentBitrate = '128k';   // reflects server state; set from /api/status
+let currentArtUrl  = '';       // album-art currently shown (proxy URL key)
 let directTuneBand = currentBand;
 
 // ---------------------------------------------------------------------------
@@ -916,6 +973,35 @@ function renderStationsModal() {
 }
 
 // ---------------------------------------------------------------------------
+// Album art (layout C): cover tile + blurred panel wash, both in the LCD.
+//
+// Preload through our same-origin proxy (the raw mzstatic CDN is often blocked
+// or TLS-inspected on remote/corporate wifi even when the site itself loads),
+// and ignore a load that completes after a newer track has already arrived.
+// ---------------------------------------------------------------------------
+function setArtBackground(url) {
+  url = url || '';
+  if (url === currentArtUrl) return;
+  currentArtUrl = url;
+  const lcd = $('lcd'), cover = $('lcd-cover'), wash = $('art-wash');
+  if (!url) {                                  // no art → hide cover + wash
+    lcd.classList.remove('has-art');
+    cover.style.backgroundImage = '';
+    wash.style.backgroundImage = '';
+    return;
+  }
+  const src = '/api/art?u=' + encodeURIComponent(url);
+  const img = new Image();
+  img.onload = () => {
+    if (currentArtUrl !== url) return;         // superseded by a newer track
+    cover.style.backgroundImage = `url("${src}")`;
+    wash.style.backgroundImage  = `url("${src}")`;
+    lcd.classList.add('has-art');
+  };
+  img.src = src;                               // onerror: keep previous art
+}
+
+// ---------------------------------------------------------------------------
 // Now playing poll
 // ---------------------------------------------------------------------------
 async function pollNowPlaying() {
@@ -950,14 +1036,32 @@ async function pollNowPlaying() {
       label = 'AM Broadcast';
     }
     $('call-display').innerHTML = label + (city ? ` <span class="city">· ${city}</span>` : '');
-    // Track
-    let track = '';
-    if (rds.artist || rds.title) {
-      track = [rds.artist, rds.title].filter(Boolean).join(' — ');
+    // Track + provenance. Prefer the resolved track (what the ID pipeline and
+    // the art/Android client use), falling back to raw RDS text. The badge
+    // shows which source identified it.
+    const t = d.track;
+    let trackText = '', src = '';
+    if (t && (t.artist || t.title)) {
+      trackText = [t.artist, t.title].filter(Boolean).join(' — ');
+      src = t.source || '';
+    } else if (rds.artist || rds.title) {
+      trackText = [rds.artist, rds.title].filter(Boolean).join(' — ');
+      src = 'rds';
     } else if (rds.rt) {
-      track = rds.rt;
+      trackText = rds.rt;
     }
-    $('track-display').textContent = track;
+    $('track-display').textContent = trackText;
+    const SRC_LABELS = { rds: 'RDS', lyrics: 'LYRICS', acoustid: 'CHROMA' };
+    const srcBadge = $('track-src');
+    if (trackText && SRC_LABELS[src]) {
+      srcBadge.textContent = SRC_LABELS[src];
+      srcBadge.className = 'track-src src-' + src;
+      srcBadge.style.display = '';
+    } else {
+      srcBadge.style.display = 'none';
+    }
+    // Album-art ambient background (from the resolved track, if identified)
+    setArtBackground(t && t.art_url);
     // HD state machine
     if (d.hd_unavailable && currentHd) {
       currentHd = false;
