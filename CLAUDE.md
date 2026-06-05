@@ -164,6 +164,23 @@ polls `/api/now_playing` every ~1s for current RDS/captions/lyrics, and
 `/api/stations` every 30s for the scanned station list. Tuning is a JSON
 POST to `/api/tune` which writes `active.env` and restarts `sdr-fm@active`.
 
+### Stream delivery & resilience (weak/remote networks)
+
+- **Selectable bitrate.** The radio UI has a stream-quality row
+  (64/96/128/192/256k) → `POST /api/bitrate`, which persists the choice in
+  `ui.json`, re-encodes the current tune (`write_env` reads the persisted
+  value), and restarts `sdr-fm@active`. The value is allowlist-validated
+  before it reaches ffmpeg. Lower = less bandwidth = fewer dropouts.
+- **Player auto-reconnect.** `radio.html` runs its own exponential-backoff
+  reconnect loop on the `<audio>` element (browsers never retry a dropped
+  live stream on their own), with instant recovery on the `online` /
+  `visibilitychange` events. `isPlaying` is *intent*, not playback state.
+- **Icecast jitter buffer.** `tune-icecast.sh` (repo root) raises Icecast's
+  `burst-size` 64K→256K and `queue-size` 512K→1M so each (re)connect gets a
+  deep buffer to coast through wifi blips. **Not package-managed** — it edits
+  `/etc/icecast2/icecast.xml` in place. `bootstrap.sh` runs it; re-run it by
+  hand after `dpkg-reconfigure icecast2` or any Icecast reinstall.
+
 ## Caption pipeline
 
 The caption orchestrator (`caption_orchestrator.py`) is a separate service.

@@ -161,6 +161,9 @@ systemctl daemon-reload
 echo "[8/9] Icecast..."
 systemctl enable icecast2
 systemctl start  icecast2 || true
+# Deepen the client jitter buffer so remote/weak-network listeners don't chop.
+# Idempotent; re-run tune-icecast.sh after `dpkg-reconfigure icecast2`.
+"$REPO_DIR/tune-icecast.sh" || echo "  (icecast tuning skipped — run ./tune-icecast.sh after configuring Icecast)"
 
 # ---------------------------------------------------------------------------
 # 9. Enable our services (but don't start until configs are filled in)
@@ -180,7 +183,7 @@ REMAINING STEPS:
 
   1. Configure Icecast passwords:
        sudo dpkg-reconfigure icecast2
-       sudo systemctl restart icecast2
+       sudo ./tune-icecast.sh        # re-apply buffer tuning + restart
 
   2. Edit /etc/sdr-streams/active.env and tuner.env, setting
      ICECAST_PASS to match Icecast's source password from step 1.
