@@ -229,14 +229,16 @@ def parse_lrc(synced):
 _art_cache = {}
 
 
-def fetch_art(artist, title):
-    """Best-effort cover art + album for a track, via the iTunes Search API
-    (no key needed). Returns (art_url, album) or (None, None). Cached by track
-    so we don't re-hit the network on every re-match of the same song."""
+def itunes_lookup(artist, title):
+    """Look a track up in the iTunes Search API (no key needed). Returns a dict
+    {art_url, album, artist, title} of the best match, or {} on miss/error.
+    The artist/title are the *canonical* iTunes strings — used to repair
+    truncated/garbled RDS reads. Cached so we don't re-hit the network on every
+    re-match of the same song."""
     key = f"{artist}\t{title}"
     if key in _art_cache:
         return _art_cache[key]
-    art_url = album = None
+    out = {}
     try:
         r = requests.get(
             "https://itunes.apple.com/search",
@@ -246,15 +248,48 @@ def fetch_art(artist, title):
         if r.ok:
             results = r.json().get("results") or []
             if results:
-                raw = results[0].get("artworkUrl100")
-                if raw:
+                res = results[0]
+                raw = res.get("artworkUrl100")
+                out = {
                     # iTunes returns a 100px thumb; request a larger render.
-                    art_url = raw.replace("100x100bb", "600x600bb")
-                album = results[0].get("collectionName")
+                    "art_url": raw.replace("100x100bb", "600x600bb") if raw else None,
+                    "album":   res.get("collectionName"),
+                    "artist":  (res.get("artistName") or "").strip() or None,
+                    "title":   (res.get("trackName") or "").strip() or None,
+                }
     except (requests.RequestException, ValueError) as e:
-        print(f"[art] {e}", file=sys.stderr)
-    _art_cache[key] = (art_url, album)
-    return art_url, album
+        print(f"[itunes] {e}", file=sys.stderr)
+    _art_cache[key] = out
+    return out
+
+
+def fetch_art(artist, title):
+    """Back-compat shim: (art_url, album) for callers that only want cover art."""
+    it = itunes_lookup(artist, title)
+    return it.get("art_url"), it.get("album")
+
+
+def _norm(s):
+    """Lowercased alphanumeric-only form for fuzzy artist/title comparison."""
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _canonical_match(rds_artist, rds_title, it_artist, it_title):
+    """Is the iTunes record the same song as the RDS read — safe to adopt its
+    full/canonical artist+title? Conservative: artist must match (allowing one
+    to contain the other), and the RDS title must be consistent with the iTunes
+    one (equal, or one a substring of the other — which covers truncation like
+    'Nothi' ⊂ 'Nothing Else Matters'). This expands/repairs RDS without ever
+    swapping in an unrelated song."""
+    if not (it_artist and it_title):
+        return False
+    a_rds, a_it = _norm(rds_artist), _norm(it_artist)
+    t_rds, t_it = _norm(rds_title), _norm(it_title)
+    if not (a_rds and a_it and t_rds and t_it):
+        return False
+    artist_ok = a_rds == a_it or a_rds in a_it or a_it in a_rds
+    title_ok  = t_rds == t_it or t_rds in t_it or t_it in t_rds
+    return artist_ok and title_ok
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +364,8 @@ def _song_key(artist, title):
     return ((artist or "").strip().lower(), (title or "").strip().lower())
 
 
-def consider(artist, title, source, confidence, duration=None, score=None):
+def consider(artist, title, source, confidence, duration=None, score=None,
+             authoritative=False):
     """Confidence-ranked resolver — the single entry point every identification
     source funnels through. Decides whether a candidate should replace what we
     currently show:
@@ -358,17 +394,30 @@ def consider(artist, title, source, confidence, duration=None, score=None):
         if confidence > cur_conf:
             _upgrade_same(artist, title, source, score, confidence)
         return
+    # `authoritative` (RDS reporting a new song) is a song-boundary signal: the
+    # station is telling us what's playing *now*, so switch even at equal
+    # confidence — otherwise the first RDS track (both conf 1.0, no duration)
+    # would stick forever and bleed into the next song.
     stale = bool(cur_dur) and (now - cur_at) > cur_dur
-    if cur_key is None or stale or confidence > cur_conf:
+    if cur_key is None or stale or confidence > cur_conf or authoritative:
         _apply_new(artist, title, duration, source, score, confidence)
 
 
 def _apply_new(artist, title, duration, source, score, confidence):
     """Full match for a newly-identified song: synced lyrics + cover art."""
+    # Canonicalize against iTunes first: repairs truncated/garbled RDS reads
+    # (e.g. "Nothi" -> "Nothing Else Matters") so the displayed title, the
+    # lyric lookup, and the cover art all use the real strings.
+    it = itunes_lookup(artist, title)
+    if _canonical_match(artist, title, it.get("artist"), it.get("title")):
+        if (it["artist"], it["title"]) != (artist, title):
+            print(f"[canon:{source}] {artist} - {title} -> "
+                  f"{it['artist']} - {it['title']}", file=sys.stderr)
+        artist, title = it["artist"], it["title"]
+    art_url, album = it.get("art_url"), it.get("album")
     lrc = lrclib_get(artist, title, duration)
     lines = parse_lrc(lrc.get("syncedLyrics")) if lrc else []
     has_lyrics = bool(lines)
-    art_url, album = fetch_art(artist, title)
     print(f"[match:{source}] {artist} - {title} "
           f"(conf={confidence:.2f}, score={score}, "
           f"lyrics={'yes' if has_lyrics else 'no'}, "
@@ -433,12 +482,26 @@ def rds_lyrics_loop():
         artist = (np.get("artist") or "").strip()
         title  = (np.get("title")  or "").strip()
         if not (artist and title):
+            # RDS no longer naming a song — station slogan between tracks. If
+            # the track we're showing came from RDS, that's a song boundary:
+            # drop it so it doesn't persist through the ad/talk break into the
+            # next song. (Non-RDS IDs are left alone — RDS clearing says nothing
+            # about a lyric/fingerprint match.)
+            if last_seen != (None, None):
+                with slock:
+                    from_rds = bool(state.get("song")) and \
+                        state["song"].get("source") == "rds"
+                if from_rds:
+                    reset_song()
+                    write_state()
+                last_seen = (None, None)
             continue
         if (artist, title) == last_seen:
             continue
         last_seen = (artist, title)
         try:
-            consider(artist, title, source="rds", confidence=CONF_RDS)
+            consider(artist, title, source="rds", confidence=CONF_RDS,
+                     authoritative=True)
         except Exception as e:
             print(f"[rds_lyrics] {e}", file=sys.stderr)
 
