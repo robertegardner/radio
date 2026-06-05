@@ -27,6 +27,18 @@ SCAN_FM_SERVICE  = "sdr-scan.service"
 SCAN_AM_SERVICE  = "sdr-am-scan.service"
 ICECAST_PASS     = os.environ.get("ICECAST_PASS", "changeme")
 
+# MP3 stream bitrates the user may pick from the radio UI. The value lands
+# in active.env (BITRATE=) and is passed straight to ffmpeg, so it must be
+# validated against this allowlist — never trust the raw request value.
+ALLOWED_BITRATES = ["64k", "96k", "128k", "192k", "256k"]
+DEFAULT_BITRATE  = "128k"
+
+
+def current_bitrate() -> str:
+    """Persisted stream bitrate, clamped to the allowlist."""
+    br = ui_settings.load().get("bitrate", DEFAULT_BITRATE)
+    return br if br in ALLOWED_BITRATES else DEFAULT_BITRATE
+
 app = Flask(__name__)
 
 
@@ -96,7 +108,7 @@ def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0
         f"FREQ={freq_val}\n"
         f"SAMP={samp}\n"
         f"GAIN={gain}\n"
-        f"BITRATE=128k\n"
+        f"BITRATE={current_bitrate()}\n"
         f"MOUNT=fm.mp3\n"
         f"ICECAST_PASS={ICECAST_PASS}\n"
     )
@@ -268,6 +280,7 @@ def api_status():
         "current_hd":        is_hd,
         "current_subchannel": subchannel,
         "status":            is_active(SERVICE),
+        "bitrate":           current_bitrate(),
     })
 
 
@@ -377,6 +390,33 @@ def api_tune():
     clear_runtime_state()
     sysctl("restart")
     return jsonify({"ok": True, "freq": freq, "band": band, "hd": hd, "subchannel": subchannel})
+
+
+@app.route("/api/bitrate", methods=["POST"])
+def api_bitrate():
+    """Set the MP3 stream bitrate, then re-encode the current tune at it."""
+    payload = request.get_json(silent=True) or {}
+    br = str(payload.get("bitrate", "")).strip()
+    if br not in ALLOWED_BITRATES:
+        return jsonify({"ok": False, "error": f"invalid bitrate {br!r}"}), 400
+    # Re-write active.env (which now picks up the new bitrate) and restart the
+    # stream so ffmpeg re-encodes at it. Skip the restart if nothing is tuned.
+    # Both writes can fail on a full/read-only disk — return JSON, not an HTML
+    # 500 the UI can't parse.
+    freq, band, is_hd, subchannel = current_tune()
+    restarted = False
+    try:
+        ui_settings.save({"bitrate": br})
+        if freq:
+            write_env(freq, band, is_hd, subchannel)
+    except OSError as e:
+        app.logger.error("api_bitrate save/write_env failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    if freq:
+        clear_runtime_state()
+        sysctl("restart")
+        restarted = True
+    return jsonify({"ok": True, "bitrate": br, "restarted": restarted})
 
 
 # ---------------------------------------------------------------------------
