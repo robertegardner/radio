@@ -14,6 +14,8 @@ DEFAULTS = {
     "stream_url":     "",      # empty = build from request host
     "stream_label":   "Local Icecast",
     "site_title":     "Pi Radio",
+    "bitrate":        "128k",  # MP3 encode bitrate; validated against the
+                               # allowlist in app.py before it reaches the stream
 }
 
 

@@ -78,7 +78,11 @@
     text-transform: uppercase; letter-spacing: .1em;
   }
   .led {
-    width: 7px; height: 7px; border-radius: 50%;
+    /* inline-block is required — a plain inline <span> ignores width/height,
+       which left these dots at 0×0 and invisible. */
+    display: inline-block; vertical-align: middle;
+    width: 8px; height: 8px; margin-right: 4px; margin-bottom: 1px;
+    border-radius: 50%;
     background: #333;
     transition: background .15s, box-shadow .15s;
   }
@@ -188,6 +192,8 @@
   .hd-subch-group { display: flex; gap: .4rem; }
   .btn.hd-ch { min-width: 52px; font-size: .8rem; font-family: 'Courier New', monospace; letter-spacing: .04em; }
   .btn.hd-ch.active { background: var(--amber); color: #1a1208; border-color: var(--amber); }
+  .btn.qual-ch { min-width: 48px; font-size: .8rem; font-family: 'Courier New', monospace; letter-spacing: .04em; }
+  .btn.qual-ch.active { background: var(--amber); color: #1a1208; border-color: var(--amber); }
 
   /* Volume */
   .vol-wrap { display: flex; align-items: center; gap: .5rem; }
@@ -399,6 +405,18 @@
     </div>
   </div>
 
+  <!-- Stream quality (bitrate) selector -->
+  <div class="hd-subch-row" id="qual-row">
+    <div class="presets-label">Stream quality — lower = smoother on weak wifi</div>
+    <div class="hd-subch-group">
+      <button class="btn qual-ch" data-br="64k">64k</button>
+      <button class="btn qual-ch" data-br="96k">96k</button>
+      <button class="btn qual-ch" data-br="128k">128k</button>
+      <button class="btn qual-ch" data-br="192k">192k</button>
+      <button class="btn qual-ch" data-br="256k">256k</button>
+    </div>
+  </div>
+
   <div class="footer">
     <a href="/">admin</a>
   </div>
@@ -464,6 +482,7 @@ let currentSubchannel = parseInt(localStorage.getItem(LS_SUBCH) || '0', 10) || 0
 let presets    = loadPresets();
 let isPlaying  = false;
 let modalBand  = 'fm';
+let currentBitrate = '128k';   // reflects server state; set from /api/status
 let directTuneBand = currentBand;
 
 // ---------------------------------------------------------------------------
@@ -678,32 +697,103 @@ function seek(direction) {
 
 // ---------------------------------------------------------------------------
 // Playback
+//
+// `isPlaying` is the user's *intent* to be listening, not whether audio is
+// currently flowing. On flaky wifi the browser silently drops the <audio>
+// fetch (firing error/stalled/ended) and never retries a live stream on its
+// own — so while the user intends to play, we run our own reconnect loop with
+// exponential backoff until a 'playing' event confirms we're live again.
 // ---------------------------------------------------------------------------
-function playStream() {
-  if (!STREAM_URL) { showToast('No stream URL configured. Visit admin > Settings.'); return; }
+let reconnectTimer = null;
+let reconnectDelay = 1000;            // backoff, doubles up to RECONNECT_MAX
+const RECONNECT_MIN = 1000;
+const RECONNECT_MAX = 10000;
+
+function openStream() {
+  // Cache-bust so we get a fresh Icecast connection, not a stale buffered one.
   const sep = STREAM_URL.includes('?') ? '&' : '?';
   audio.src = STREAM_URL + sep + 't=' + Date.now();
   audio.volume = $('vol').value / 100;
-  const p = audio.play();
-  if (p && p.catch) {
-    p.catch(err => {
-      isPlaying = false;
-      $('play-btn').textContent = '▶';
-      $('stream-led').classList.remove('on');
-      $('stream-led').classList.add('err');
-      showToast('Play failed: ' + err.message);
-    });
-  }
-  isPlaying = true;
+  return audio.play();
+}
+
+function playStream() {
+  if (!STREAM_URL) { showToast('No stream URL configured. Visit admin > Settings.'); return; }
+  isPlaying = true;                   // intent: keep this stream alive
+  reconnectDelay = RECONNECT_MIN;
+  clearTimeout(reconnectTimer); reconnectTimer = null;
   $('play-btn').textContent = '⏸';
   $('stream-led').classList.remove('err');
   $('stream-led').classList.add('on');
+  const p = openStream();
+  if (p && p.catch) {
+    p.catch(() => { if (isPlaying) scheduleReconnect(); });
+  }
 }
+
 function pauseStream() {
+  isPlaying = false;                  // intent: stop — cancels any reconnect
+  clearTimeout(reconnectTimer); reconnectTimer = null;
   audio.pause(); audio.src = '';
-  isPlaying = false;
   $('play-btn').textContent = '▶';
   $('stream-led').classList.remove('on');
+  $('stream-led').classList.remove('err');
+}
+
+function scheduleReconnect() {
+  if (!isPlaying || reconnectTimer) return;   // dedupe overlapping drop events
+  $('stream-led').classList.remove('on');
+  $('stream-led').classList.add('err');
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (!isPlaying) return;
+    if (navigator.onLine === false) { scheduleReconnect(); return; }  // wait for net
+    const p = openStream();
+    if (p && p.catch) p.catch(() => { if (isPlaying) scheduleReconnect(); });
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX);
+  }, reconnectDelay);
+}
+
+// ---------------------------------------------------------------------------
+// Stream quality (bitrate)
+//
+// Lower bitrate = less bandwidth = fewer dropouts on weak wifi, at some audio
+// quality cost. Changing it rewrites active.env and restarts the FM stream
+// server-side, so the audio briefly drops and the player reconnects.
+// ---------------------------------------------------------------------------
+function renderQuality() {
+  document.querySelectorAll('.qual-ch').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.br === currentBitrate));
+}
+
+async function setBitrate(br) {
+  if (br === currentBitrate) return;
+  const wasPlaying = isPlaying;
+  showToast('Switching to ' + br + ' — stream will reconnect…');
+  if (isPlaying) pauseStream();
+  $('stream-led').classList.add('hd');          // amber while the stream restarts
+  try {
+    const r = await fetch('/api/bitrate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({bitrate: br}),
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'quality change failed');
+    currentBitrate = br;
+    renderQuality();
+    if (wasPlaying) {
+      await waitForStream();
+      $('stream-led').classList.remove('hd');
+      playStream();
+    } else {
+      $('stream-led').classList.remove('hd');
+    }
+  } catch (e) {
+    $('stream-led').classList.remove('hd');
+    showToast('Quality change failed: ' + e.message);
+    if (wasPlaying) playStream();                // resume on the old setting
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -926,6 +1016,50 @@ function showToast(msg) {
 $('play-btn').addEventListener('click', () => {
   if (isPlaying) pauseStream(); else playStream();
 });
+
+// Auto-reconnect: the browser drops a live <audio> stream on a network blip
+// and won't retry it. While the user intends to play, re-open on every drop
+// signal, and recover instantly when the network or tab visibility returns.
+//
+// error/ended = the stream is definitely dead → reconnect now. stalled/waiting
+// = data stopped arriving but the browser is still trying → give it a grace
+// period (a real flaky-wifi stall won't recover; a momentary one will) before
+// re-opening, so normal buffering hiccups don't cause needless audio gaps.
+let stallTimer = null;
+let stallPos = 0;
+function armStallWatchdog() {
+  if (!isPlaying || stallTimer) return;
+  stallPos = audio.currentTime;
+  stallTimer = setTimeout(() => {
+    stallTimer = null;
+    if (!isPlaying) return;
+    // A live stall freezes currentTime without pausing the element; if the
+    // position didn't advance over the grace window, the stream is dead.
+    if (audio.paused || audio.currentTime === stallPos) scheduleReconnect();
+    // else: playback resumed on its own — future stalls will re-arm us.
+  }, 4000);
+}
+function clearStallWatchdog() { clearTimeout(stallTimer); stallTimer = null; }
+
+['error', 'ended'].forEach(ev =>
+  audio.addEventListener(ev, () => { if (isPlaying) scheduleReconnect(); }));
+['stalled', 'waiting'].forEach(ev =>
+  audio.addEventListener(ev, () => { if (isPlaying) armStallWatchdog(); }));
+audio.addEventListener('playing', () => {
+  reconnectDelay = RECONNECT_MIN;             // healthy again — reset backoff
+  clearStallWatchdog();
+  $('stream-led').classList.remove('err');
+  if (isPlaying) $('stream-led').classList.add('on');
+});
+window.addEventListener('online', () => {
+  if (!isPlaying) return;
+  clearTimeout(reconnectTimer); reconnectTimer = null;
+  reconnectDelay = RECONNECT_MIN;
+  scheduleReconnect();
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && isPlaying && (audio.paused || audio.error)) scheduleReconnect();
+});
 $('vol').addEventListener('input', e => {
   audio.volume = e.target.value / 100;
   localStorage.setItem(LS_VOL, e.target.value);
@@ -954,6 +1088,9 @@ document.querySelectorAll('.hd-ch').forEach(btn => {
     const sub = parseInt(btn.dataset.sub);
     if (sub !== currentSubchannel) tuneTo(currentFreq, 'fm', true, sub);
   });
+});
+document.querySelectorAll('.qual-ch').forEach(btn => {
+  btn.addEventListener('click', () => setBitrate(btn.dataset.br));
 });
 $('seek-up').addEventListener('click',   () => seek(+1));
 $('seek-down').addEventListener('click', () => seek(-1));
@@ -992,6 +1129,11 @@ if (savedVol != null) {
 updateBandUI();
 updateHdUI();
 renderPresets();
+renderQuality();
+// Reflect the server's current stream bitrate in the quality selector.
+fetch('/api/status').then(r => r.json()).then(d => {
+  if (d.bitrate) { currentBitrate = d.bitrate; renderQuality(); }
+}).catch(() => {});
 pollStations();
 pollNowPlaying();
 setInterval(pollNowPlaying, 1000);
