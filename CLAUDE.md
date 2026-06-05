@@ -247,10 +247,38 @@ Token-authenticated; the Pi has the matching token in `/etc/sdr-streams/captions
 This is outside the Pi's git checkout — those scripts are kept in the repo
 purely for backup/disaster recovery.
 
+The live deploy directory on the GPU host is `/opt/whisper-svc/` (its own
+copy — NOT synced from this repo). It holds a `.env` with the real
+`WHISPER_TOKEN` and a `docker-compose.yml` that runs **`medium.en`** (the
+repo defaults match this as of 2026-06-02). Redeploy = ssh to the host and
+`cd /opt/whisper-svc && docker compose up -d --build`. If you change the
+service code, scp the updated files from `scripts/whisper-svc/` into that
+dir first, then rebuild. See CLAUDE.local.md for the host's name/login.
+
 If captions stop working, first check is `curl http://gpu-host:8088/health`
-from the Pi.
+from the Pi. A 401/422 on `/transcribe` without a body is normal (FastAPI
+validates the required audio file before the token check).
 
 ## Known issues and open work
+
+### The scanner project steals the SDRplay (and the FM self-heal for it)
+
+The sibling **scanner** project (`/srv/scanner`) runs SDRTrunk for MOSWIN P25 on
+its own Nooelec dongle — but on startup SDRTrunk loads `libsdrplay_api.so` and
+**enumerates our RSPdx-R2** (just to disable it), which knocks our `rx_fm` off the
+device: `[ERROR] Device has been removed. Stopping.`. Two fixes, both verified
+2026-06-02 (radio + MOSWIN now run simultaneously):
+
+- **Coexistence (lives in the scanner's bootstrap.sh):** `/usr/local/lib/libsdrplay_api.so*`
+  is restricted to `root:radio 750` so the scanner user can't load it and SDRTrunk
+  skips the RSP; we (user `radio`, group `radio`) keep access. **Re-apply after any
+  SDRplay API reinstall** — it resets perms to 644 and the conflict returns.
+- **Self-heal (this repo, `device_loss_guard.sh`):** this rx_fm build loops the
+  "Device has been removed" error forever instead of exiting, so `sdr-fm@.service`'s
+  `Restart=always` never fired. The fm/wbfm branch of `stream.sh` now pipes rx_fm's
+  stderr through `device_loss_guard.sh`, which SIGTERMs the service main PID on the
+  marker so systemd restarts and re-acquires the device. Covers transient USB
+  losses too. (AM/`am_stream.py` and HD are Python and exit on error already.)
 
 ### HD Radio field notes
 

@@ -16,7 +16,7 @@ RUN pip3 install --no-cache-dir \
 WORKDIR /app
 COPY whisper_service.py /app/
 
-ENV WHISPER_MODEL=small.en
+ENV WHISPER_MODEL=medium.en
 ENV WHISPER_DEVICE=cuda
 ENV WHISPER_COMPUTE=float16
 

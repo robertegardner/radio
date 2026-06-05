@@ -12,7 +12,7 @@ Captions:
   - Continuously sends short PCM chunks from local Icecast to a remote Whisper
     service. Captions are suppressed while in lyrics mode.
 """
-import json, os, re, subprocess, sys, tempfile, threading, time, wave
+import collections, json, os, re, subprocess, sys, tempfile, threading, time, wave
 from pathlib import Path
 
 import requests
@@ -21,6 +21,7 @@ ICECAST_URL    = os.environ["ICECAST_URL"]
 WHISPER_URL    = os.environ["WHISPER_URL"]
 WHISPER_TOKEN  = os.environ["WHISPER_TOKEN"]
 ACOUSTID_KEY   = os.environ.get("ACOUSTID_KEY", "")
+GENIUS_TOKEN   = os.environ.get("GENIUS_TOKEN", "")
 STATE_PATH     = Path(os.environ["STATE_PATH"])
 NOW_PLAYING    = Path(os.environ.get("NOW_PLAYING_PATH",
                        "/run/sdr-streams/now_playing.json"))
@@ -30,11 +31,28 @@ RDS_OFFSET_MS  = int(os.environ.get("RDS_OFFSET_MS",     "5000"))
 SAMPLE_RATE          = 16000
 CHANNELS             = 1
 BYTES_PER_SAMPLE     = 2
-WHISPER_WINDOW_SEC   = 6
+WHISPER_WINDOW_SEC   = 10      # longer window -> more context, better recall on sung vocals
 FINGERPRINT_EVERY    = 25
-FINGERPRINT_DUR_SEC  = 15
+FINGERPRINT_DUR_SEC  = 20      # longer sample -> more robust fingerprint on FM
 RDS_POLL_SEC         = 2
 RING_SEC             = 60
+
+# Confidence-ranked identification. A candidate replaces what we show only when
+# it improves on it: a higher-confidence read of the same song (upgrade) or a
+# stronger / non-stale different song. So RDS (authoritative) is never clobbered
+# by a weaker fingerprint guess, while weak guesses get corrected as better data
+# arrives.
+CONF_RDS             = 1.0     # station-provided artist/title is authoritative
+CONF_LYRICS          = 0.70    # Whisper transcript -> lyric search (when enabled)
+ACOUSTID_FLOOR       = 0.50    # accept fingerprints >= this (was a hard 0.6 cut)
+ACOUSTID_GOOD        = 0.85    # at/above this we stop re-fingerprinting to upgrade
+
+# Lyric-based ID: Whisper transcript -> Genius search -> LRClib verification.
+LYRIC_ID_EVERY       = 15      # seconds between lyric-ID attempts
+LYRIC_WINDOW_SEC     = 45      # how much recent transcript to consider
+LYRIC_MIN_WORDS      = 6       # need at least this much transcript to bother
+LYRIC_QUERY_WORDS    = 20      # most-recent words used as the Genius query
+LYRIC_VERIFY_MIN     = 0.15    # min transcript/lyrics trigram overlap to trust a hit
 
 state = {
     "mode": "idle",
@@ -87,6 +105,24 @@ class Ring:
 
 ring = Ring(RING_SEC)
 
+# Rolling Whisper transcript (timestamp, text) for lyric-based identification.
+transcript_buf = collections.deque(maxlen=16)
+transcript_lock = threading.Lock()
+
+# Whisper hallucinates stock phrases on non-speech audio (instrumental breaks,
+# music beds). These pollute both the caption display and the lyric-ID query, so
+# we drop them outright.
+_HALLUCINATIONS = {
+    "", "you", "thank you", "thanks", "thanks for watching",
+    "thank you for watching", "please subscribe", "subscribe",
+    "bye", "bye bye", "okay", "ok", "so", "yeah",
+    "subtitles by the amara.org community", "transcription by castingwords",
+}
+
+
+def is_hallucination(text):
+    return text.strip().lower().strip(" .!?,-") in _HALLUCINATIONS
+
 
 def reader_loop():
     while True:
@@ -138,14 +174,16 @@ def transcribe_loop():
         except requests.RequestException as e:
             print(f"[whisper] {e}", file=sys.stderr)
             continue
-        if not text:
-            continue
+        if not text or is_hallucination(text):
+            continue  # skip empties + non-speech hallucinations (don't pollute captions/lyric query)
         with slock:
             state["caption_text"]    = text
             state["caption_updated"] = time.time()
             if state["mode"] == "idle":
                 state["mode"] = "captions"
         write_state()
+        with transcript_lock:
+            transcript_buf.append((time.time(), text))
 
 
 def lrclib_get(artist, title, duration=None):
@@ -188,21 +226,165 @@ def parse_lrc(synced):
     return lines
 
 
-def apply_song(artist, title, duration, source, score=None):
+_art_cache = {}
+
+
+def fetch_art(artist, title):
+    """Best-effort cover art + album for a track, via the iTunes Search API
+    (no key needed). Returns (art_url, album) or (None, None). Cached by track
+    so we don't re-hit the network on every re-match of the same song."""
+    key = f"{artist}\t{title}"
+    if key in _art_cache:
+        return _art_cache[key]
+    art_url = album = None
+    try:
+        r = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": f"{artist} {title}", "media": "music",
+                    "entity": "song", "limit": 1},
+            timeout=8, headers={"User-Agent": "sdr-tuner/1.0"})
+        if r.ok:
+            results = r.json().get("results") or []
+            if results:
+                raw = results[0].get("artworkUrl100")
+                if raw:
+                    # iTunes returns a 100px thumb; request a larger render.
+                    art_url = raw.replace("100x100bb", "600x600bb")
+                album = results[0].get("collectionName")
+    except (requests.RequestException, ValueError) as e:
+        print(f"[art] {e}", file=sys.stderr)
+    _art_cache[key] = (art_url, album)
+    return art_url, album
+
+
+# ---------------------------------------------------------------------------
+# Lyric-based identification (Whisper transcript -> Genius -> LRClib verify)
+# ---------------------------------------------------------------------------
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _words(s):
+    return _WORD_RE.findall((s or "").lower())
+
+
+def _trigrams(words):
+    return {tuple(words[i:i + 3]) for i in range(len(words) - 2)}
+
+
+def recent_transcript():
+    """Recent Whisper transcript within LYRIC_WINDOW_SEC, consecutive dups dropped."""
+    cutoff = time.time() - LYRIC_WINDOW_SEC
+    with transcript_lock:
+        texts = [t for (ts, t) in transcript_buf if ts >= cutoff]
+    out = []
+    for t in texts:
+        if not out or out[-1] != t:
+            out.append(t)
+    return " ".join(out).strip()
+
+
+def lyrics_overlap(transcript, lyrics):
+    """Fraction of the transcript's word-trigrams that appear in the candidate
+    song's lyrics — our guard against Whisper-mishears matching the wrong song."""
+    tg = _trigrams(_words(transcript))
+    if not tg:
+        return 0.0
+    lg = _trigrams(_words(lyrics))
+    if not lg:
+        return 0.0
+    return len(tg & lg) / len(tg)
+
+
+def genius_search(query):
+    if not GENIUS_TOKEN:
+        return None
+    try:
+        r = requests.get(
+            "https://api.genius.com/search",
+            params={"q": query}, timeout=10,
+            headers={"Authorization": f"Bearer {GENIUS_TOKEN}",
+                     "User-Agent": "sdr-tuner/1.0"})
+    except requests.RequestException as e:
+        print(f"[genius] {e}", file=sys.stderr)
+        return None
+    if not r.ok:
+        print(f"[genius] HTTP {r.status_code}", file=sys.stderr)
+        return None
+    try:
+        hits = r.json().get("response", {}).get("hits", [])
+    except ValueError:
+        return None
+    for h in hits:
+        if h.get("type") != "song":
+            continue
+        res = h.get("result") or {}
+        artist = (res.get("primary_artist") or {}).get("name")
+        title = res.get("title")
+        if artist and title:
+            return artist.strip(), title.strip()
+    return None
+
+
+def _song_key(artist, title):
+    return ((artist or "").strip().lower(), (title or "").strip().lower())
+
+
+def consider(artist, title, source, confidence, duration=None, score=None):
+    """Confidence-ranked resolver — the single entry point every identification
+    source funnels through. Decides whether a candidate should replace what we
+    currently show:
+
+      - same song, higher confidence  -> upgrade in place (keeps lyrics running)
+      - different song, higher confidence or current one is stale (past its
+        duration) -> switch
+      - otherwise -> ignore (weaker than what we already have)
+
+    This lets sources run continuously and the answer improve as better data
+    arrives, without a weak guess clobbering a strong one (e.g. RDS at 1.0).
+    """
+    artist, title = (artist or "").strip(), (title or "").strip()
+    if not (artist and title):
+        return
+    now = time.time()
+    with slock:
+        cur = state.get("song")
+        cur_key  = _song_key(cur.get("artist"), cur.get("title")) if cur else None
+        cur_conf = cur.get("confidence", 0.0) if cur else 0.0
+        cur_at   = cur.get("matched_at", 0.0) if cur else 0.0
+        cur_dur  = cur.get("duration") if cur else None
+    cand_key = _song_key(artist, title)
+
+    if cur_key == cand_key:
+        if confidence > cur_conf:
+            _upgrade_same(artist, title, source, score, confidence)
+        return
+    stale = bool(cur_dur) and (now - cur_at) > cur_dur
+    if cur_key is None or stale or confidence > cur_conf:
+        _apply_new(artist, title, duration, source, score, confidence)
+
+
+def _apply_new(artist, title, duration, source, score, confidence):
+    """Full match for a newly-identified song: synced lyrics + cover art."""
     lrc = lrclib_get(artist, title, duration)
     lines = parse_lrc(lrc.get("syncedLyrics")) if lrc else []
     has_lyrics = bool(lines)
+    art_url, album = fetch_art(artist, title)
     print(f"[match:{source}] {artist} - {title} "
-          f"(score={score}, lyrics={'yes' if has_lyrics else 'no'})",
+          f"(conf={confidence:.2f}, score={score}, "
+          f"lyrics={'yes' if has_lyrics else 'no'}, "
+          f"art={'yes' if art_url else 'no'})",
           file=sys.stderr)
     with slock:
         state["song"] = {
             "artist":     artist,
             "title":      title,
+            "album":      album,
+            "art_url":    art_url,
             "duration":   duration or (lrc.get("duration") if lrc else None),
             "matched_at": time.time(),
             "source":     source,
             "score":      score,
+            "confidence": confidence,
         }
         state["lyrics_lines"] = lines
         state["lyrics_index"] = -1
@@ -213,7 +395,31 @@ def apply_song(artist, title, duration, source, score=None):
         else:
             state["mode"] = "idle"
     write_state()
-    return True
+
+
+def _upgrade_same(artist, title, source, score, confidence):
+    """Raise confidence/source for the song we're already showing (e.g. RDS
+    confirming a fingerprint guess). Fills in cover art if we didn't have it.
+    Does not disturb the running lyrics."""
+    with slock:
+        cur = state.get("song")
+        need_art = bool(cur) and not cur.get("art_url")
+    art_url = album = None
+    if need_art:
+        art_url, album = fetch_art(artist, title)
+    print(f"[upgrade:{source}] {artist} - {title} conf={confidence:.2f}", file=sys.stderr)
+    with slock:
+        cur = state.get("song")
+        if not cur or _song_key(cur.get("artist"), cur.get("title")) != _song_key(artist, title):
+            return  # song changed underneath us
+        cur["source"]     = source
+        cur["score"]      = score
+        cur["confidence"] = confidence
+        if art_url and not cur.get("art_url"):
+            cur["art_url"] = art_url
+            if album:
+                cur["album"] = album
+    write_state()
 
 
 def rds_lyrics_loop():
@@ -231,13 +437,8 @@ def rds_lyrics_loop():
         if (artist, title) == last_seen:
             continue
         last_seen = (artist, title)
-        with slock:
-            cur = state.get("song") or {}
-            same = (cur.get("artist") == artist and cur.get("title") == title)
-        if same:
-            continue
         try:
-            apply_song(artist, title, duration=None, source="rds", score=None)
+            consider(artist, title, source="rds", confidence=CONF_RDS)
         except Exception as e:
             print(f"[rds_lyrics] {e}", file=sys.stderr)
 
@@ -300,10 +501,12 @@ def fingerprint_loop():
         with slock:
             song = state.get("song")
         if song:
-            elapsed = time.time() - song["matched_at"]
-            if song.get("duration") and elapsed < song["duration"] - 30:
-                continue
-            if song.get("source") == "rds" and elapsed < 60:
+            elapsed  = time.time() - song["matched_at"]
+            conf     = song.get("confidence", 0.0)
+            near_end = bool(song.get("duration")) and elapsed >= song["duration"] - 30
+            # Rest only when we already have a solid ID that isn't ending. A
+            # low-confidence ID keeps getting re-fingerprinted to improve it.
+            if conf >= ACOUSTID_GOOD and not near_end:
                 continue
 
         pcm = ring.last(FINGERPRINT_DUR_SEC)
@@ -321,18 +524,61 @@ def fingerprint_loop():
         match = acoustid_lookup(fp.get("duration"), fp.get("fingerprint"))
         if not match:
             continue
-        if match["score"] < 0.6:
+        if match["score"] < ACOUSTID_FLOOR:
             print(f"[acoustid] low score {match['score']:.2f} for "
                   f"{match['artist']} - {match['title']}, ignoring",
                   file=sys.stderr)
             continue
         try:
-            apply_song(match["artist"], match["title"],
-                       duration=match.get("duration"),
-                       source="acoustid",
-                       score=match["score"])
+            consider(match["artist"], match["title"],
+                     source="acoustid",
+                     confidence=match["score"],
+                     duration=match.get("duration"),
+                     score=match["score"])
         except Exception as e:
             print(f"[fingerprint] {e}", file=sys.stderr)
+
+
+def lyric_id_loop():
+    """Identify the song from the Whisper transcript when nothing better has.
+    Genius finds a candidate; LRClib lyrics verify it before we trust it."""
+    if not GENIUS_TOKEN:
+        print("[lyric] disabled (no GENIUS_TOKEN)", file=sys.stderr)
+        return
+    while True:
+        time.sleep(LYRIC_ID_EVERY)
+        now = time.time()
+        with slock:
+            song = state.get("song")
+            conf = song.get("confidence", 0.0) if song else 0.0
+            stale = bool(song and song.get("duration")) and \
+                (now - song.get("matched_at", 0.0)) > (song.get("duration") or 0)
+        # Already have an ID at least as good as a lyric match, and it's not
+        # past its length (i.e. probably still the same song) -> nothing to do.
+        if song and conf >= CONF_LYRICS and not stale:
+            continue
+
+        transcript = recent_transcript()
+        words = _words(transcript)
+        if len(words) < LYRIC_MIN_WORDS:
+            continue
+        cand = genius_search(" ".join(words[-LYRIC_QUERY_WORDS:]))
+        if not cand:
+            continue
+        artist, title = cand
+
+        lrc = lrclib_get(artist, title)
+        lyrics_text = (lrc.get("plainLyrics") or lrc.get("syncedLyrics") or "") if lrc else ""
+        ov = lyrics_overlap(transcript, lyrics_text) if lyrics_text else 0.0
+        if ov < LYRIC_VERIFY_MIN:
+            print(f"[lyric] unverified {artist} - {title} (overlap={ov:.2f})", file=sys.stderr)
+            continue
+        print(f"[lyric] verified {artist} - {title} (overlap={ov:.2f})", file=sys.stderr)
+        try:
+            consider(artist, title, source="lyrics", confidence=CONF_LYRICS,
+                     duration=lrc.get("duration") if lrc else None)
+        except Exception as e:
+            print(f"[lyric] {e}", file=sys.stderr)
 
 
 def lyrics_tick_loop():
@@ -377,6 +623,8 @@ def tune_watcher_loop():
             reset_song()
             with slock:
                 state["caption_text"] = ""
+            with transcript_lock:
+                transcript_buf.clear()   # stale transcript would misidentify the new station
             write_state()
         last_seen = exists
 
@@ -388,6 +636,7 @@ def main():
         threading.Thread(target=transcribe_loop,    daemon=True),
         threading.Thread(target=rds_lyrics_loop,    daemon=True),
         threading.Thread(target=fingerprint_loop,   daemon=True),
+        threading.Thread(target=lyric_id_loop,      daemon=True),
         threading.Thread(target=lyrics_tick_loop,   daemon=True),
         threading.Thread(target=tune_watcher_loop,  daemon=True),
     ]

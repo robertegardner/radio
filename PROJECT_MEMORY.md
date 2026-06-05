@@ -12,11 +12,21 @@ every time.
 > than none — it makes Claude confidently wrong. If a conversation ends with
 > "we decided X" or "I finished Y", that is the signal to update.
 
-Last meaningful update: 2026-05-27 — dx-R2 fully deployed and AM stack
-rebuilt around it (HDR + Python demodulator). Investigation this session
-identified local switching-supply RFI as the actual cap on AM audio
-quality; diagnostic tooling shipped. See
-`notes/2026-05-27-am-rfi-discovery.md` for the full record.
+Last meaningful update: 2026-06-02 — **FM stream self-heal on SDRplay device
+loss** (radio PR #1). The sibling scanner project's SDRTrunk was enumerating our
+RSPdx-R2 on startup and knocking `rx_fm` off the device ("Device has been
+removed"), and this rx_fm build loops that error forever without exiting so
+systemd never restarted it. Added `device_loss_guard.sh` (watches rx_fm stderr,
+kills the service on the marker → systemd restarts and re-acquires). The
+persistent contention is prevented on the scanner side by restricting
+`/usr/local/lib/libsdrplay_api.so*` to the `radio` group (in the scanner's
+bootstrap.sh) — **re-apply after any SDRplay API reinstall**. Radio FM + scanner
+MOSWIN now run simultaneously. Full record:
+`notes/2026-06-02-fm-device-loss-selfheal.md`.
+
+Prior: 2026-05-27 — dx-R2 fully deployed and AM stack rebuilt (HDR + Python
+demodulator); local switching-supply RFI identified as the cap on AM audio
+quality; diagnostic tooling shipped. See `notes/2026-05-27-am-rfi-discovery.md`.
 
 ---
 
