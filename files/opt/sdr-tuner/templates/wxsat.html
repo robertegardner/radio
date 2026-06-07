@@ -110,6 +110,14 @@
                                animation: pulse 1.1s ease-in-out infinite; }
   .tuner-pill b { color: var(--text); font-weight: 600; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .status-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  .chip { display: inline-flex; align-items: center; gap: .4rem; font-size: .72rem;
+          color: var(--text-dim); border: 1px solid var(--line); background: var(--bg-panel);
+          border-radius: 999px; padding: .3rem .7rem; }
+  .chip b { color: var(--text); font-weight: 600; }
+  .chip.live { color: var(--green); border-color: rgba(109,240,155,.4); }
+  .chip.auth { color: var(--amber); border-color: var(--amber-dim); background: rgba(255,174,58,.06); }
 </style>
 </head>
 <body>
@@ -119,7 +127,11 @@
     <a href="/radio">← Radio</a>
   </header>
 
-  <div class="tuner-pill" id="tunerPill"><span class="dot"></span><span id="tunerText">Tuner: …</span></div>
+  <div class="status-bar">
+    <div class="tuner-pill" id="tunerPill"><span class="dot"></span><span id="tunerText">Tuner: …</span></div>
+    <span class="chip" id="listenChip">👤 …</span>
+    <span class="chip auth" id="authChip" style="display:none">✓ next pass authorized</span>
+  </div>
 
   <div id="dryban" class="dryban" style="display:none">
     Dry-run mode — the scheduler is logging capture/skip decisions but not yet
@@ -176,6 +188,15 @@ async function refreshStatus() {
     else if (s.tuner === 'decoding')  txt.innerHTML = `Tuner: <b>decoding ${escapeHTML(sat)}</b> — stream back up`;
     else if (s.tuner === 'streaming') txt.innerHTML = 'Tuner: <b>streaming</b> the radio';
     else                              txt.innerHTML = 'Tuner: <b>idle</b>';
+
+    // Radio consumers (human listeners on the stream).
+    const lc = $('listenChip');
+    if (!s.listeners_ok) { lc.className = 'chip'; lc.innerHTML = '👤 listeners: —'; }
+    else if (s.listeners > 0) { lc.className = 'chip live'; lc.innerHTML = `👤 <b>${s.listeners}</b> listening`; }
+    else { lc.className = 'chip'; lc.innerHTML = '👤 no listeners'; }
+
+    // Next pass authorized to capture despite listeners?
+    $('authChip').style.display = s.next_authorized ? '' : 'none';
   } catch (e) { /* leave last */ }
 }
 
