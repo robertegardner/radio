@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Satellites — Meteor-M LRPT</title>
+<style>
+  :root {
+    --bg-deep:   #0a0a0c;
+    --bg-panel:  #15161a;
+    --bg-raise:  #1f2126;
+    --bg-button: #2a2d33;
+    --bg-button-hover: #353941;
+    --line:      #2c2e34;
+    --amber:     #ffae3a;
+    --amber-dim: #6b4818;
+    --green:     #6df09b;
+    --red:       #f06d6d;
+    --blue:      #6db0f0;
+    --text:      #e6e6e6;
+    --text-dim:  #888;
+    --text-faint:#555;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    min-height: 100%;
+    background: radial-gradient(circle at 50% -10%, #1a1c22 0%, var(--bg-deep) 70%) fixed;
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  body { padding: 1rem; }
+  .wrap { width: 100%; max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 1rem; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding: .25rem .25rem 0; }
+  header h1 {
+    font-size: 1.05rem; font-weight: 700; letter-spacing: .04em;
+    color: var(--amber); text-shadow: 0 0 10px var(--amber-dim);
+  }
+  header h1 .sub { color: var(--text-dim); font-weight: 400; text-shadow: none; font-size: .8rem; margin-left: .5rem; }
+  header a { color: var(--text-dim); text-decoration: none; font-size: .8rem; border: 1px solid var(--line);
+             padding: .35rem .7rem; border-radius: 8px; white-space: nowrap; }
+  header a:hover { background: var(--bg-button); color: var(--text); }
+
+  .panel {
+    background: linear-gradient(180deg, #1a1c22 0%, var(--bg-panel) 100%);
+    border: 1px solid var(--line); border-radius: 14px; padding: 1rem 1.1rem;
+    box-shadow: 0 12px 40px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.03);
+  }
+  .panel h2 {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .14em;
+    color: var(--text-dim); margin-bottom: .8rem; font-weight: 700;
+  }
+
+  /* Free-space meter */
+  .space-row { display: flex; align-items: center; gap: .9rem; }
+  .meter { flex: 1; height: 12px; border-radius: 6px; background: #0d0e10; overflow: hidden;
+           box-shadow: inset 0 1px 3px rgba(0,0,0,.7); }
+  .meter > span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--green), var(--amber)); transition: width .5s; }
+  .meter.warn > span { background: linear-gradient(90deg, var(--amber), var(--red)); }
+  .space-txt { font-family: 'Courier New', monospace; font-size: .8rem; color: var(--text-dim); white-space: nowrap; }
+  .space-txt b { color: var(--text); }
+
+  /* Planned passes */
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th { text-align: left; color: var(--text-faint); font-weight: 600; font-size: .68rem;
+       text-transform: uppercase; letter-spacing: .08em; padding: .3rem .5rem; }
+  td { padding: .45rem .5rem; border-top: 1px solid var(--line); }
+  td.sat { color: var(--amber); font-weight: 600; }
+  td.mono { font-family: 'Courier New', monospace; color: var(--text); }
+  .elev-pill { display: inline-block; min-width: 3.2em; text-align: center; padding: .1rem .4rem;
+               border-radius: 6px; font-family: 'Courier New', monospace; font-size: .8rem;
+               background: var(--bg-raise); color: var(--text); }
+  .elev-pill.hi { color: var(--green); }
+
+  /* Captures gallery */
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .8rem; }
+  .card { background: var(--bg-raise); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+          display: flex; flex-direction: column; }
+  .card .thumb { aspect-ratio: 4/3; background: #0d0e10 center/cover no-repeat; display: flex;
+                 align-items: center; justify-content: center; color: var(--text-faint); font-size: .8rem; text-align: center; }
+  .card .thumb a { display: block; width: 100%; height: 100%; }
+  .card .body { padding: .6rem .7rem .7rem; display: flex; flex-direction: column; gap: .35rem; }
+  .card .title { color: var(--amber); font-weight: 600; font-size: .9rem; }
+  .card .meta { font-size: .74rem; color: var(--text-dim); font-family: 'Courier New', monospace; }
+  .card .note { font-size: .78rem; color: var(--text); }
+  .card .foot { display: flex; align-items: center; justify-content: space-between; margin-top: .15rem; }
+  .badge { font-size: .64rem; text-transform: uppercase; letter-spacing: .08em; font-weight: 700;
+           padding: .15rem .45rem; border-radius: 5px; }
+  .badge.image       { background: rgba(109,240,155,.15); color: var(--green); }
+  .badge.skipped,
+  .badge.would_skip  { background: rgba(255,174,58,.15); color: var(--amber); }
+  .badge.would_capture { background: rgba(109,176,240,.15); color: var(--blue); }
+  .badge.failed      { background: rgba(240,109,109,.15); color: var(--red); }
+  .del { background: none; border: 1px solid var(--line); color: var(--text-faint); cursor: pointer;
+         border-radius: 6px; font-size: .72rem; padding: .2rem .5rem; }
+  .del:hover { color: var(--red); border-color: var(--red); }
+  .empty { color: var(--text-faint); font-size: .85rem; padding: .4rem .2rem; }
+  .dryban { font-size: .7rem; color: var(--blue); border: 1px solid var(--amber-dim);
+            background: rgba(109,176,240,.06); border-radius: 8px; padding: .4rem .7rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Weather Satellites <span class="sub">Meteor-M LRPT · 137.9 MHz</span></h1>
+    <a href="/radio">← Radio</a>
+  </header>
+
+  <div id="dryban" class="dryban" style="display:none">
+    Dry-run mode — the scheduler is logging capture/skip decisions but not yet
+    touching the SDR. The radio stream is never interrupted.
+  </div>
+
+  <section class="panel">
+    <h2>Storage</h2>
+    <div class="space-row">
+      <div class="meter" id="meter"><span id="meterBar"></span></div>
+      <div class="space-txt" id="spaceTxt">—</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Planned captures · next passes</h2>
+    <div id="passesWrap"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>Past captures</h2>
+    <div id="capturesWrap"><div class="empty">Loading…</div></div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function fmtLocal(unix) {
+  if (!unix) return "—";
+  const d = new Date(unix * 1000);
+  return d.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+function fmtTimeOnly(unix) {
+  if (!unix) return "—";
+  return new Date(unix * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+function fmtGB(bytes) {
+  if (bytes == null) return "—";
+  return (bytes / 1073741824).toFixed(1) + " GB";
+}
+const OUTCOME_LABEL = {
+  image: "Image", skipped: "Skipped", failed: "Failed",
+  would_capture: "Would capture", would_skip: "Would skip",
+};
+
+async function refreshSpace() {
+  try {
+    const s = await (await fetch('/api/wxsat/space')).json();
+    if (s.total) {
+      const pct = s.pct_used ?? 0;
+      $('meterBar').style.width = pct + '%';
+      $('meter').classList.toggle('warn', pct >= 85);
+      $('spaceTxt').innerHTML = `<b>${fmtGB(s.free)}</b> free · ${pct}% used of ${fmtGB(s.total)}`;
+    }
+  } catch (e) { /* leave last value */ }
+}
+
+async function refreshPasses() {
+  try {
+    const d = await (await fetch('/api/wxsat/passes')).json();
+    const passes = d.passes || [];
+    if (!passes.length) {
+      $('passesWrap').innerHTML = '<div class="empty">No upcoming passes above the elevation threshold.</div>';
+      return;
+    }
+    let rows = passes.map(p => {
+      const hi = (p.max_elev >= 40) ? ' hi' : '';
+      return `<tr>
+        <td class="sat">${p.satellite}</td>
+        <td class="mono">${fmtLocal(p.aos_unix)}</td>
+        <td class="mono">${fmtTimeOnly(p.los_unix)}</td>
+        <td class="mono">${(p.duration_min ?? 0).toFixed(1)}m</td>
+        <td><span class="elev-pill${hi}">${Math.round(p.max_elev)}°</span></td>
+      </tr>`;
+    }).join('');
+    $('passesWrap').innerHTML =
+      `<table><thead><tr><th>Satellite</th><th>AOS (local)</th><th>LOS</th><th>Dur</th><th>Max el</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    $('passesWrap').innerHTML = '<div class="empty">Could not load passes.</div>';
+  }
+}
+
+let dryRunSeen = false;
+async function refreshCaptures() {
+  try {
+    const d = await (await fetch('/api/wxsat/captures?recent=60')).json();
+    const caps = d.captures || [];
+    // Surface the dry-run banner if any record is a "would_*" outcome.
+    if (!dryRunSeen && caps.some(c => (c.outcome||'').startsWith('would_'))) {
+      dryRunSeen = true; $('dryban').style.display = '';
+    }
+    if (!caps.length) {
+      $('capturesWrap').innerHTML = '<div class="empty">No captures yet. Records appear here after each scheduled pass.</div>';
+      return;
+    }
+    $('capturesWrap').innerHTML = '<div class="gallery">' + caps.map(cardHTML).join('') + '</div>';
+  } catch (e) {
+    $('capturesWrap').innerHTML = '<div class="empty">Could not load captures.</div>';
+  }
+}
+
+function cardHTML(c) {
+  const oc = c.outcome || 'failed';
+  const label = OUTCOME_LABEL[oc] || oc;
+  let thumb;
+  if (oc === 'image' && c.thumb) {
+    const full = '/api/wxsat/image/' + c.image;
+    thumb = `<div class="thumb"><a href="${full}" target="_blank" rel="noopener"
+               style="background:#0d0e10 center/cover no-repeat;background-image:url('/api/wxsat/image/${c.thumb}')"></a></div>`;
+  } else {
+    const icon = oc.startsWith('would_') ? '◌' : (oc === 'failed' ? '⚠' : '⤫');
+    thumb = `<div class="thumb">${icon}&nbsp;${label}</div>`;
+  }
+  const note = c.notation ? `<div class="note">${escapeHTML(c.notation)}</div>`
+             : (c.reason ? `<div class="note" style="color:var(--text-dim)">${escapeHTML(c.reason)}</div>` : '');
+  const elev = (c.max_elev != null) ? `${Math.round(c.max_elev)}° max` : '';
+  return `<div class="card">
+    ${thumb}
+    <div class="body">
+      <div class="title">${escapeHTML(c.satellite || '')}</div>
+      <div class="meta">${fmtLocal(c.aos_unix)} · ${elev}</div>
+      ${note}
+      <div class="foot">
+        <span class="badge ${oc}">${label}</span>
+        <button class="del" data-id="${escapeHTML(c.id)}">Delete</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function escapeHTML(s) {
+  return String(s ?? '').replace(/[&<>"']/g, m =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.del');
+  if (!btn) return;
+  if (!confirm('Delete this capture?')) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/wxsat/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: btn.dataset.id}),
+    });
+    if (r.ok) { refreshCaptures(); refreshSpace(); }
+    else { btn.disabled = false; alert('Delete failed.'); }
+  } catch (err) { btn.disabled = false; alert('Delete failed.'); }
+});
+
+function refreshAll() { refreshSpace(); refreshPasses(); refreshCaptures(); }
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+</body>
+</html>

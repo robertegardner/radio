@@ -2,13 +2,15 @@
 """SDR Tuner Flask UI."""
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
+from flask import (Flask, Response, jsonify, redirect, render_template, request,
+                   send_from_directory, url_for)
 
 import station_db
 import ui_settings
@@ -23,6 +25,12 @@ NOW_PLAYING_PATH = Path("/run/sdr-streams/now_playing.json")
 CAPTIONS_PATH    = Path("/run/sdr-streams/captions.json")
 HD_STATUS_PATH   = Path("/run/sdr-streams/hd_status.json")
 RFI_STATUS_PATH  = Path("/run/sdr-streams/rfi_status.json")
+
+# Weather-satellite (wxsat) state. Persistent products + captures index live in
+# WXSAT_DIR; the upcoming-pass list is regenerated into tmpfs.
+WXSAT_DIR          = Path("/var/lib/sdr-streams/wxsat")
+WXSAT_CAPTURES_PATH = WXSAT_DIR / "captures.json"
+WXSAT_PASSES_PATH   = Path("/run/sdr-streams/wxsat_passes.json")
 
 SERVICE          = "sdr-fm@active"
 SCAN_FM_SERVICE  = "sdr-scan.service"
@@ -207,6 +215,16 @@ def radio():
     return render_template(
         "radio.html",
         stream_url=ui_settings.stream_url_for(request.host),
+        site_title=settings["site_title"],
+    )
+
+
+@app.route("/wxsat")
+def wxsat():
+    """Weather-satellite (Meteor-M LRPT) capture gallery + schedule."""
+    settings = ui_settings.load()
+    return render_template(
+        "wxsat.html",
         site_title=settings["site_title"],
     )
 
@@ -442,6 +460,102 @@ def api_bitrate():
         sysctl("restart")
         restarted = True
     return jsonify({"ok": True, "bitrate": br, "restarted": restarted})
+
+
+# ---------------------------------------------------------------------------
+# Weather-satellite (wxsat) APIs
+#   GETs are public-safe like /radio. The delete POST mutates and is grouped
+#   with the admin routes for NPMplus auth (see CLAUDE.md).
+# ---------------------------------------------------------------------------
+def _wxsat_captures():
+    data = _load_json(WXSAT_CAPTURES_PATH)
+    if not data:
+        return []
+    return data.get("captures", []) if isinstance(data, dict) else []
+
+
+@app.route("/api/wxsat/captures")
+def api_wxsat_captures():
+    caps = sorted(_wxsat_captures(), key=lambda c: c.get("aos_unix", 0), reverse=True)
+    try:
+        recent = int(request.args.get("recent", "0"))
+    except ValueError:
+        recent = 0
+    if recent > 0:
+        caps = caps[:recent]
+    return jsonify({"captures": caps})
+
+
+@app.route("/api/wxsat/passes")
+def api_wxsat_passes():
+    data = _load_json(WXSAT_PASSES_PATH)
+    if not data:
+        return jsonify({"passes": [], "generated_at": None})
+    return jsonify(data)
+
+
+@app.route("/api/wxsat/space")
+def api_wxsat_space():
+    # Report free space on the filesystem holding the captures.
+    for p in (WXSAT_DIR, WXSAT_DIR.parent, Path("/")):
+        try:
+            u = shutil.disk_usage(p)
+            return jsonify({
+                "total": u.total, "used": u.used, "free": u.free,
+                "pct_used": round(u.used / u.total * 100, 1) if u.total else None,
+            })
+        except OSError:
+            continue
+    return jsonify({"total": None, "used": None, "free": None, "pct_used": None})
+
+
+@app.route("/api/wxsat/image/<path:relpath>")
+def api_wxsat_image(relpath):
+    # send_from_directory rejects traversal (../) and absolute escapes.
+    resp = send_from_directory(WXSAT_DIR, relpath)
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
+@app.route("/api/wxsat/delete", methods=["POST"])
+def api_wxsat_delete():
+    """Delete a capture (its product dir, if any) and drop it from the index.
+    Mutating route — protect via NPMplus auth alongside the other admin routes."""
+    payload = request.get_json(silent=True) or {}
+    cid = str(payload.get("id", "")).strip()
+    if not cid:
+        return jsonify({"ok": False, "error": "missing id"}), 400
+    caps = _wxsat_captures()
+    rec = next((c for c in caps if c.get("id") == cid), None)
+    if rec is None:
+        return jsonify({"ok": False, "error": "not found"}), 404
+
+    # Remove the product directory (first path component of the image), guarding
+    # strictly against escaping WXSAT_DIR.
+    img = rec.get("image") or rec.get("thumb")
+    if img:
+        top = str(img).split("/", 1)[0]
+        target = (WXSAT_DIR / top).resolve()
+        try:
+            base = WXSAT_DIR.resolve()
+            if target == base or base not in target.parents:
+                raise ValueError("refusing to delete outside wxsat dir")
+            if target.is_dir():
+                shutil.rmtree(target)
+        except (OSError, ValueError) as e:
+            app.logger.error("wxsat delete %s: %s", cid, e)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    remaining = [c for c in caps if c.get("id") != cid]
+    try:
+        WXSAT_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = WXSAT_CAPTURES_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"captures": remaining}))
+        os.replace(tmp, WXSAT_CAPTURES_PATH)
+    except OSError as e:
+        app.logger.error("wxsat delete index rewrite %s: %s", cid, e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "id": cid})
 
 
 # ---------------------------------------------------------------------------

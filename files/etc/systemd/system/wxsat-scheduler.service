@@ -1,0 +1,25 @@
+[Unit]
+Description=Weather-satellite (Meteor-M LRPT) capture scheduler
+After=network-online.target icecast2.service sdr-fm@active.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radio
+EnvironmentFile=/etc/sdr-streams/wxsat.env
+# SatDump keeps its config + pre-seeded TLEs under this HOME (not the radio
+# user's real home).
+Environment=HOME=/var/lib/sdr-streams/wxsat
+WorkingDirectory=/opt/sdr-tuner
+RuntimeDirectory=sdr-streams
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 /opt/sdr-tuner/wxsat_scheduler.py
+Restart=always
+RestartSec=10
+# NOTE: do NOT add NoNewPrivileges=yes or ProtectSystem=strict here. Unlike
+# sdr-captions, this service must `sudo systemctl stop/start sdr-fm@active`
+# around a capture; NoNewPrivileges blocks setuid sudo entirely.
+
+[Install]
+WantedBy=multi-user.target
