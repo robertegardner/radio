@@ -38,6 +38,8 @@ log = logging.getLogger("wxsat.sched")
 
 WXSAT_DIR     = predict.WXSAT_DIR
 CAPTURES_PATH = WXSAT_DIR / "captures.json"
+STATUS_PATH   = Path("/run/sdr-streams/wxsat_status.json")
+AUTH_PATH     = Path("/run/sdr-streams/wxsat_authorized.json")
 NOW_PLAYING_PATH = Path("/run/sdr-streams/now_playing.json")
 ACTIVE_ENV_PATH  = Path("/etc/sdr-streams/active.env")
 ICECAST_STATUS_URL = "http://localhost:8000/status-json.xsl"
@@ -177,7 +179,7 @@ def _save_index(captures):
 
 
 def record_outcome(p, outcome, notation=None, reason=None,
-                   image=None, thumb=None, listeners=0):
+                   image=None, thumb=None, listeners=0, authorized=False):
     rec = {
         "id": f"{_slug(p['satellite'])}-{int(p['aos_unix'])}",
         "satellite": p["satellite"],
@@ -192,6 +194,7 @@ def record_outcome(p, outcome, notation=None, reason=None,
         "image": image,
         "thumb": thumb,
         "listeners": listeners,
+        "authorized": authorized,
         "created": int(time.time()),
     }
     captures = _load_index()
@@ -206,29 +209,69 @@ def record_outcome(p, outcome, notation=None, reason=None,
 
 
 # ---------------------------------------------------------------------------
+# Live status + listener authorization
+#   The radio/wxsat pages read these. Authorization lets a listener pre-approve
+#   the next interruption so the capture runs even while they're listening.
+# ---------------------------------------------------------------------------
+def write_status(cfg, state, next_pass=None, capturing=None):
+    payload = {
+        "state": state,                # scheduled | capturing | idle
+        "updated": int(time.time()),
+        "dry_run": cfg["dry_run"],
+        "next_pass": next_pass,
+        "capturing_pass": capturing,
+    }
+    try:
+        STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATUS_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, STATUS_PATH)
+    except OSError as e:
+        log.warning("write_status failed: %s", e)
+
+
+def read_authorized_aos():
+    """The AOS the listener authorized for capture, or None."""
+    try:
+        return int(json.loads(AUTH_PATH.read_text()).get("aos_unix"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return None
+
+
+def clear_authorization():
+    try:
+        AUTH_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log.warning("clear_authorization failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Pass handling
 # ---------------------------------------------------------------------------
-def do_capture(p, cfg):
+def do_capture(p, cfg, authorized=False):
     """Run a real capture via wxsat_capture.sh (Phase 2). The script stops the
     stream, runs rx_sdr -> satdump, and ALWAYS restarts the stream via trap."""
     out_dir = WXSAT_DIR / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     duration = max(60, int(p["los_unix"] - time.time()) + int(cfg["post_los_s"]))
     env = dict(os.environ, WXSAT_OUT_DIR=str(out_dir), WXSAT_DURATION=str(duration))
     log.info("CAPTURE %s -> %s (%ss)", p["satellite"], out_dir, duration)
+    write_status(cfg, "capturing", capturing=p)
     try:
         # Generous headroom: the script stops the stream, captures `duration`s,
         # restarts the stream, then decodes offline (decode can take minutes).
         r = subprocess.run([CAPTURE_SCRIPT], env=env, capture_output=True,
                            text=True, timeout=duration + 600)
     except subprocess.TimeoutExpired:
-        return record_outcome(p, "failed", reason="capture timed out")
+        return record_outcome(p, "failed", reason="capture timed out", authorized=authorized)
     if r.returncode != 0:
         reason = (r.stderr or r.stdout or "capture failed").strip().splitlines()[-1:] or ["capture failed"]
-        return record_outcome(p, "failed", reason=reason[0][:200])
+        return record_outcome(p, "failed", reason=reason[0][:200], authorized=authorized)
     image, thumb = _best_product(out_dir)
     if not image:
-        return record_outcome(p, "failed", reason="no image product decoded")
-    return record_outcome(p, "image", image=image, thumb=thumb or image)
+        return record_outcome(p, "failed", reason="no image product decoded", authorized=authorized)
+    return record_outcome(p, "image", image=image, thumb=thumb or image, authorized=authorized)
 
 
 def _best_product(out_dir):
@@ -247,15 +290,28 @@ def _best_product(out_dir):
 def handle_pass(p, cfg):
     """The capture-vs-skip decision for one pass."""
     listeners, ok = human_listeners()
-    if ok and listeners > 0:
-        notation = compose_notation()
-        outcome = "would_skip" if cfg["dry_run"] else "skipped"
-        return record_outcome(p, outcome, notation=notation, listeners=listeners)
-    # capture path (0 listeners, or stats hiccup → default to capture)
-    if cfg["dry_run"]:
-        note = None if ok else "listener check failed — would capture anyway"
-        return record_outcome(p, "would_capture", reason=note, listeners=listeners)
-    return do_capture(p, cfg)
+    # A listener can pre-authorize this pass to capture despite the interruption.
+    auth_aos = read_authorized_aos()
+    is_auth = auth_aos is not None and abs(auth_aos - int(p["aos_unix"])) <= 120
+
+    try:
+        if ok and listeners > 0 and not is_auth:
+            notation = compose_notation()
+            outcome = "would_skip" if cfg["dry_run"] else "skipped"
+            return record_outcome(p, outcome, notation=notation, listeners=listeners)
+
+        # Capture path: 0 human listeners, a stats hiccup, or listener-authorized.
+        if is_auth:
+            log.info("pass authorized by listener — capturing despite %d listener(s)", listeners)
+        if cfg["dry_run"]:
+            note = ("authorized by listener — would capture despite listeners" if is_auth
+                    else (None if ok else "listener check failed — would capture anyway"))
+            return record_outcome(p, "would_capture", reason=note,
+                                  listeners=listeners, authorized=is_auth)
+        return do_capture(p, cfg, authorized=is_auth)
+    finally:
+        if is_auth:
+            clear_authorization()
 
 
 # ---------------------------------------------------------------------------
@@ -286,14 +342,15 @@ def run(cfg):
                     if (p["norad"], int(p["aos_unix"])) not in processed
                     and p["aos_unix"] - cfg["aos_buffer_s"] > now]
         if upcoming:
-            next_aos = min(p["aos_unix"] for p in upcoming)
-            sleep_s = min(cfg["refresh_interval_s"],
-                          max(5, next_aos - cfg["aos_buffer_s"] - now))
             nxt = min(upcoming, key=lambda p: p["aos_unix"])
+            sleep_s = min(cfg["refresh_interval_s"],
+                          max(5, nxt["aos_unix"] - cfg["aos_buffer_s"] - now))
+            write_status(cfg, "scheduled", next_pass=nxt)
             log.info("next: %s AOS %s (max %.0f deg) — sleeping %.0fs",
                      nxt["satellite"], nxt["aos_iso"], nxt.get("max_elev") or 0, sleep_s)
         else:
             sleep_s = cfg["refresh_interval_s"]
+            write_status(cfg, "idle")
             log.info("no upcoming passes >= %g deg in %gh — sleeping %.0fs",
                      cfg["min_elev"], cfg["predict_hours"], sleep_s)
         time.sleep(sleep_s)

@@ -31,6 +31,8 @@ RFI_STATUS_PATH  = Path("/run/sdr-streams/rfi_status.json")
 WXSAT_DIR          = Path("/var/lib/sdr-streams/wxsat")
 WXSAT_CAPTURES_PATH = WXSAT_DIR / "captures.json"
 WXSAT_PASSES_PATH   = Path("/run/sdr-streams/wxsat_passes.json")
+WXSAT_STATUS_PATH   = Path("/run/sdr-streams/wxsat_status.json")
+WXSAT_AUTH_PATH     = Path("/run/sdr-streams/wxsat_authorized.json")
 
 SERVICE          = "sdr-fm@active"
 SCAN_FM_SERVICE  = "sdr-scan.service"
@@ -492,6 +494,68 @@ def api_wxsat_passes():
     if not data:
         return jsonify({"passes": [], "generated_at": None})
     return jsonify(data)
+
+
+@app.route("/api/wxsat/status")
+def api_wxsat_status():
+    """Current tuner status + next scheduled pass + authorization, for both the
+    /wxsat indicator and the /radio next-interruption notice."""
+    st       = _load_json(WXSAT_STATUS_PATH) or {}
+    passes   = (_load_json(WXSAT_PASSES_PATH) or {}).get("passes", [])
+    auth     = _load_json(WXSAT_AUTH_PATH) or {}
+    sched    = st.get("state")                       # scheduled | capturing | idle
+    streaming = is_active(SERVICE) == "active"
+    next_pass = st.get("next_pass") or (passes[0] if passes else None)
+
+    # The capture script restarts the stream BEFORE the (offline) decode, so a
+    # "capturing" scheduler state with the stream back up means we're decoding.
+    if sched == "capturing":
+        tuner = "capturing" if not streaming else "decoding"
+    elif streaming:
+        tuner = "streaming"
+    else:
+        tuner = "idle"
+
+    return jsonify({
+        "tuner":          tuner,            # streaming | capturing | decoding | idle
+        "stream_active":  streaming,
+        "state":          sched,
+        "dry_run":        st.get("dry_run", False),
+        "next_pass":      next_pass,
+        "capturing_pass": st.get("capturing_pass"),
+        "authorized_aos": auth.get("aos_unix"),
+    })
+
+
+@app.route("/api/wxsat/authorize", methods=["POST"])
+def api_wxsat_authorize():
+    """Listener pre-approval: capture the given pass even if someone's listening.
+    A control action like /api/tune (not a public read). Body: {aos_unix} to set,
+    {cancel:true} to clear."""
+    payload = request.get_json(silent=True) or {}
+    if payload.get("cancel"):
+        try:
+            WXSAT_AUTH_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": True, "authorized_aos": None})
+    try:
+        aos = int(payload.get("aos_unix"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "missing/invalid aos_unix"}), 400
+    now = time.time()
+    if aos < now - 300 or aos > now + 7 * 86400:
+        return jsonify({"ok": False, "error": "aos_unix out of range"}), 400
+    try:
+        WXSAT_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = WXSAT_AUTH_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"aos_unix": aos, "at": int(now)}))
+        os.replace(tmp, WXSAT_AUTH_PATH)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "authorized_aos": aos})
 
 
 @app.route("/api/wxsat/space")

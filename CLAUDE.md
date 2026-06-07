@@ -95,11 +95,11 @@ Application code lives in `files/opt/sdr-tuner/`. On the Pi it deploys to
 | `fcc_fetch.py` | Downloads FCC CDBS bulk files (facility, FM engineering, AM antenna, application tables) and joins them to produce `fcc.json` with real transmitter coordinates. Caches zip files in `/var/lib/sdr-streams/cdbs-cache/` (6-day TTL; use `--no-cache` to force refresh). FCC downloads can time out from the Pi — if so, download the four zip files on a laptop and scp to the cache dir. CDBS was frozen for new applications in Oct 2023 (existing licensed stations are complete). |
 | `ui_settings.py` | Persists user-configurable UI settings (stream URL, site title) to `/etc/sdr-streams/ui.json`. |
 | `wxsat_predict.py` | Weather-satellite pass prediction. Fetches Meteor-M TLEs (from `tle.ivanstanojevic.me` — **celestrak is unreachable from this Pi**), caches them under `/var/lib/sdr-streams/wxsat/tle/`, and uses `pyorbital` to compute the next 24–48 h of Meteor-M2-4 LRPT passes above `MIN_ELEV_DEG`. Writes `/run/sdr-streams/wxsat_passes.json`. Never touches the SDR. |
-| `wxsat_scheduler.py` | Long-running wxsat daemon (`wxsat-scheduler.service`). Refreshes predictions, sleeps to each pass's AOS-minus-buffer, runs the **skip-when-listening** check (Icecast `status-json.xsl` listeners on `/fm.mp3`), and decides capture vs skip. `DRY_RUN=1` records `would_capture`/`would_skip` without touching the SDR; `DRY_RUN=0` (Phase 2) invokes `wxsat_capture.sh`. Records outcomes to `/var/lib/sdr-streams/wxsat/captures.json`. |
+| `wxsat_scheduler.py` | Long-running wxsat daemon (`wxsat-scheduler.service`). Refreshes predictions, sleeps to each pass's AOS-minus-buffer, runs the **skip-when-listening** check (Icecast `status-json.xsl` listeners on `/fm.mp3`), and decides capture vs skip. `DRY_RUN=1` records `would_capture`/`would_skip` without touching the SDR; `DRY_RUN=0` (Phase 2) invokes `wxsat_capture.sh`. Records outcomes to `/var/lib/sdr-streams/wxsat/captures.json`. Also writes live tuner status to `/run/sdr-streams/wxsat_status.json` and honors a listener's pass **authorization** (`/run/sdr-streams/wxsat_authorized.json`) to capture despite listeners. |
 | `wxsat_capture.sh` | (Phase 2) Single-pass capture. `trap`-restarts `sdr-fm@active` on EXIT/INT/TERM, stops the stream, runs `rx_sdr` (dx-R2 Port B) → `satdump … baseband` (SatDump has no SoapySDR source, so we capture with rx_tools and decode the baseband). |
-| `templates/wxsat.html` | Weather-satellite page (`/wxsat`): free-space meter, planned-pass schedule, and a gallery of past captures (image / skipped+notation / failed), with per-capture delete. Server-rendered shell + vanilla JS polling the wxsat APIs. |
+| `templates/wxsat.html` | Weather-satellite page (`/wxsat`): live **tuner-status pill** (streaming / capturing / decoding / idle), free-space meter, planned-pass schedule, and a gallery of past captures (image / skipped+notation / failed), with per-capture delete. Server-rendered shell + vanilla JS polling the wxsat APIs. |
 | `templates/index.html` | Admin/control UI: stations table, scan buttons, settings, RDS now-playing, captions/lyrics view. Playing pill shows "HD1/HD2" suffix when in HD mode. FM rows show "HD1" tune button for stations with known `hd_programs`. |
-| `templates/radio.html` | Stereo-style UI: amber-LCD frequency display (tap to direct-tune), HD LED + subchannel badge, HD toggle button, HD1–HD4 subchannel selector row, HD rows in station modal, 12 favorites (localStorage, HD-aware), seek/scan, direct-tune modal (⌨ button or tap freq display), browser audio playback. Handles `hd_probing` / `hd_locked` / `hd_unavailable` state from the API. |
+| `templates/radio.html` | Stereo-style UI: amber-LCD frequency display (tap to direct-tune), HD LED + subchannel badge, HD toggle button, HD1–HD4 subchannel selector row, HD rows in station modal, 12 favorites (localStorage, HD-aware), seek/scan, direct-tune modal (⌨ button or tap freq display), browser audio playback. Handles `hd_probing` / `hd_locked` / `hd_unavailable` state from the API. Also shows the next weather-satellite capture with a live countdown and an "Allow this pass" button (`POST /api/wxsat/authorize`) so a listener can pre-approve the interruption. |
 
 The systemd units in `files/etc/systemd/system/` are:
 
@@ -352,10 +352,12 @@ waiting for a signal.
 
 - **NPMplus auth on admin endpoints.** The `/radio`, `/api/now_playing`,
   `/api/stations`, `/wxsat`, and the read-only `/api/wxsat/*` GETs
-  (`captures`, `passes`, `space`, `image/...`) are public-safe. Everything
-  else (`/`, `/tune`, `/scan-*`, `/settings`, `/reload-stations`, and the
-  mutating **`POST /api/wxsat/delete`**) should require basic auth via
-  NPMplus's Access List feature. No app changes needed.
+  (`captures`, `passes`, `space`, `status`, `image/...`) are public-safe.
+  `POST /api/wxsat/authorize` is a listener-facing control used by `/radio`
+  (same trust level as `/api/tune` — let a listener pre-approve the next
+  capture interruption). Everything else (`/`, `/tune`, `/scan-*`,
+  `/settings`, `/reload-stations`, and the mutating **`POST /api/wxsat/delete`**)
+  should require basic auth via NPMplus's Access List feature.
 
 - **Favorites sync/export.** Right now presets are in browser localStorage,
   per-device. Add export-to-URL and import-from-URL for cross-device sync.

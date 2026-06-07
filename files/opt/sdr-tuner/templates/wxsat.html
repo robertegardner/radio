@@ -97,6 +97,19 @@
   .empty { color: var(--text-faint); font-size: .85rem; padding: .4rem .2rem; }
   .dryban { font-size: .7rem; color: var(--blue); border: 1px solid var(--amber-dim);
             background: rgba(109,176,240,.06); border-radius: 8px; padding: .4rem .7rem; }
+
+  /* Tuner status pill */
+  .tuner-pill { display: inline-flex; align-items: center; gap: .5rem; align-self: flex-start;
+                font-size: .75rem; color: var(--text-dim); border: 1px solid var(--line);
+                background: var(--bg-panel); border-radius: 999px; padding: .35rem .8rem; }
+  .tuner-pill .dot { width: 9px; height: 9px; border-radius: 50%; background: #444; flex: none; }
+  .tuner-pill.streaming .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .tuner-pill.decoding  .dot { background: var(--blue);  box-shadow: 0 0 8px var(--blue); }
+  .tuner-pill.capturing { color: var(--amber); border-color: var(--amber-dim); }
+  .tuner-pill.capturing .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber);
+                               animation: pulse 1.1s ease-in-out infinite; }
+  .tuner-pill b { color: var(--text); font-weight: 600; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 </style>
 </head>
 <body>
@@ -105,6 +118,8 @@
     <h1>Weather Satellites <span class="sub">Meteor-M LRPT · 137.9 MHz</span></h1>
     <a href="/radio">← Radio</a>
   </header>
+
+  <div class="tuner-pill" id="tunerPill"><span class="dot"></span><span id="tunerText">Tuner: …</span></div>
 
   <div id="dryban" class="dryban" style="display:none">
     Dry-run mode — the scheduler is logging capture/skip decisions but not yet
@@ -150,6 +165,19 @@ const OUTCOME_LABEL = {
   image: "Image", skipped: "Skipped", failed: "Failed",
   would_capture: "Would capture", would_skip: "Would skip",
 };
+
+async function refreshStatus() {
+  try {
+    const s = await (await fetch('/api/wxsat/status')).json();
+    const pill = $('tunerPill'), txt = $('tunerText');
+    pill.className = 'tuner-pill ' + (s.tuner || 'idle');
+    const sat = (s.capturing_pass && s.capturing_pass.satellite) || '';
+    if (s.tuner === 'capturing')      txt.innerHTML = `Tuner: <b>capturing ${escapeHTML(sat)}</b> — stream paused`;
+    else if (s.tuner === 'decoding')  txt.innerHTML = `Tuner: <b>decoding ${escapeHTML(sat)}</b> — stream back up`;
+    else if (s.tuner === 'streaming') txt.innerHTML = 'Tuner: <b>streaming</b> the radio';
+    else                              txt.innerHTML = 'Tuner: <b>idle</b>';
+  } catch (e) { /* leave last */ }
+}
 
 async function refreshSpace() {
   try {
@@ -256,9 +284,10 @@ document.addEventListener('click', async (e) => {
   } catch (err) { btn.disabled = false; alert('Delete failed.'); }
 });
 
-function refreshAll() { refreshSpace(); refreshPasses(); refreshCaptures(); }
+function refreshAll() { refreshStatus(); refreshSpace(); refreshPasses(); refreshCaptures(); }
 refreshAll();
 setInterval(refreshAll, 30000);
+setInterval(refreshStatus, 10000);   // tuner status reacts faster than the gallery
 </script>
 </body>
 </html>
