@@ -13,8 +13,19 @@
 #   WXSAT_DURATION  capture seconds (rx_sdr runtime)
 # Tuning env (from /etc/sdr-streams/wxsat.env):
 #   FREQ_MHZ ANTENNA SAMPLERATE GAIN LRPT_PIPELINE
+#   LRPT_PIPELINE_FALLBACK  second pipeline to try if the first yields no frames
+#                           (default: the other of 72k/80k Meteor LRPT)
+#   WXSAT_KEEP_IQ_ON_FAIL   1 = retain the raw baseband when NO pipeline syncs,
+#                           for offline post-mortem (default 1); 0 = always drop.
 #
-# Exit codes: 0 ok; 11 rx_sdr failed; 12 no IQ; 13 satdump decode failed.
+# Decode strategy: M2-4 has been seen at both 72k and 80k symbol rates, and a
+# rate mismatch looks identical to "no signal" (flat 0 dB SNR, Viterbi NOSYNC).
+# So we decode with the primary pipeline, and if it produces an empty CADU we
+# retry with the fallback rate before declaring failure. On total failure we
+# keep the IQ so the pass can be re-decoded / spectrum-inspected later (the
+# scheduler's free-space prune reclaims these dirs when disk gets tight).
+#
+# Exit codes: 0 ok; 11 rx_sdr failed; 12 no IQ; 13 no pipeline synced.
 
 set -uo pipefail
 
@@ -25,19 +36,50 @@ ANTENNA="${ANTENNA:-Antenna B}"
 SAMPLERATE="${SAMPLERATE:-1000000}"
 GAIN="${GAIN:-40}"
 LRPT_PIPELINE="${LRPT_PIPELINE:-meteor_m2-x_lrpt}"
+KEEP_IQ_ON_FAIL="${WXSAT_KEEP_IQ_ON_FAIL:-1}"
 export HOME="${HOME:-/var/lib/sdr-streams/wxsat}"
 TLE_DIR="/var/lib/sdr-streams/wxsat/tle"
 
+# Fallback pipeline: explicit env wins, else swap 72k<->80k automatically.
+FALLBACK_PIPELINE="${LRPT_PIPELINE_FALLBACK:-}"
+if [[ -z "$FALLBACK_PIPELINE" ]]; then
+  if [[ "$LRPT_PIPELINE" == *_80k ]]; then
+    FALLBACK_PIPELINE="meteor_m2-x_lrpt"
+  else
+    FALLBACK_PIPELINE="meteor_m2-x_lrpt_80k"
+  fi
+fi
+
 IQ="$OUT/baseband.cs16"
+KEEP_IQ=0   # flipped to 1 on decode failure so the trap preserves the IQ
 mkdir -p "$OUT"
 
-# ALWAYS bring the broadcast stream back and drop the bulky raw IQ, no matter
-# how we exit (normal, error, signal, or SatDump hang/kill). This is rule #1.
+# ALWAYS bring the broadcast stream back (rule #1). Drop the bulky raw IQ too —
+# UNLESS a decode failure asked us to keep it for post-mortem. Runs on every
+# exit path (normal, error, signal, or SatDump hang/kill).
 cleanup() {
-  rm -f "$IQ"
+  if [[ "$KEEP_IQ" != "1" ]]; then
+    rm -f "$IQ"
+  fi
   sudo /usr/bin/systemctl start sdr-fm@active >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
+
+# Decode the recorded IQ with one pipeline. Returns 0 only if SatDump synced
+# frames (non-empty <pipeline>.cadu); a 0-byte CADU means NOSYNC / wrong rate.
+decode_with() {
+  local pl="$1"
+  echo "wxsat: decoding $(du -h "$IQ" | cut -f1) baseband with ${pl}"
+  satdump "$pl" baseband "$IQ" "$OUT" \
+    --samplerate "$SAMPLERATE" --baseband_format cs16
+  local cadu="$OUT/${pl}.cadu"
+  if [[ -s "$cadu" ]]; then
+    echo "wxsat: ${pl} synced $(stat -c%s "$cadu") bytes of CADUs"
+    return 0
+  fi
+  echo "wxsat: ${pl} produced no frames (empty CADU)" >&2
+  return 1
+}
 
 # Seed SatDump's TLE file from our cache so georeferenced products have fresh
 # elements. (SatDump's own celestrak fetch is dead on this Pi — see CLAUDE.md;
@@ -69,13 +111,21 @@ fi
 # radio is down only for the capture window, not the (longer) decode.
 sudo /usr/bin/systemctl start sdr-fm@active >/dev/null 2>&1 || true
 
-echo "wxsat: decoding $(du -h "$IQ" | cut -f1) baseband with ${LRPT_PIPELINE}"
-satdump "$LRPT_PIPELINE" baseband "$IQ" "$OUT" \
-  --samplerate "$SAMPLERATE" --baseband_format cs16
-drc=$?
-rm -f "$IQ"
-if [[ $drc -ne 0 ]]; then
-  echo "wxsat: satdump decode failed (rc=$drc)" >&2
+# Try the primary symbol rate; on no-sync, retry the fallback rate before giving
+# up. Both decode into $OUT — a successful retry's products simply win.
+if decode_with "$LRPT_PIPELINE"; then
+  :
+elif [[ "$FALLBACK_PIPELINE" != "$LRPT_PIPELINE" ]] && decode_with "$FALLBACK_PIPELINE"; then
+  echo "wxsat: primary ${LRPT_PIPELINE} found nothing; fallback ${FALLBACK_PIPELINE} synced"
+else
+  if [[ "$KEEP_IQ_ON_FAIL" == "1" ]]; then
+    KEEP_IQ=1
+    echo "wxsat: no pipeline synced — retaining IQ for post-mortem: $IQ" >&2
+  else
+    echo "wxsat: no pipeline synced (IQ not retained)" >&2
+  fi
   exit 13
 fi
+
+rm -f "$IQ"
 echo "wxsat: capture complete -> $OUT"
