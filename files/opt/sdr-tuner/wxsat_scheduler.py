@@ -40,6 +40,8 @@ WXSAT_DIR     = predict.WXSAT_DIR
 CAPTURES_PATH = WXSAT_DIR / "captures.json"
 STATUS_PATH   = Path("/run/sdr-streams/wxsat_status.json")
 AUTH_PATH     = Path("/run/sdr-streams/wxsat_authorized.json")
+# systemd-timesyncd touches this once it has stepped the clock to true time.
+TIMESYNC_MARKER = Path("/run/systemd/timesync/synchronized")
 NOW_PLAYING_PATH = Path("/run/sdr-streams/now_playing.json")
 ACTIVE_ENV_PATH  = Path("/etc/sdr-streams/active.env")
 ICECAST_STATUS_URL = "http://localhost:8000/status-json.xsl"
@@ -324,10 +326,46 @@ def handle_pass(p, cfg):
 
 
 # ---------------------------------------------------------------------------
+# Clock sync gate
+# ---------------------------------------------------------------------------
+def wait_for_clock_sync(timeout_s=300, poll_s=2):
+    """Block until the system clock is NTP-synchronized, up to timeout_s.
+
+    The Pi has no battery-backed RTC. At boot the kernel sets the clock to
+    1970; systemd then restores the *last shutdown's* timestamp from
+    /var/lib/systemd/timesync/clock — which after an overnight power-down can
+    be hours stale but looks like a plausible date. systemd-timesyncd later
+    contacts a time server and steps the clock to the true time, touching
+    TIMESYNC_MARKER.
+
+    If we compute the pass schedule before that step, every prediction is
+    anchored to the wrong "now": the UI shows a "next pass" that already
+    happened, and because time.sleep() is CLOCK_MONOTONIC (immune to the step)
+    the bad schedule persists until the next 30-min refresh. Waiting for the
+    marker means the first prediction runs against a correct clock. We cap the
+    wait so a missing/unreachable time source never blocks the daemon forever
+    — Restart=always plus the periodic refresh self-heal the worst case."""
+    if TIMESYNC_MARKER.exists():
+        return True
+    log.info("waiting up to %ds for system clock sync (%s)", timeout_s, TIMESYNC_MARKER)
+    waited = 0
+    while waited < timeout_s:
+        time.sleep(poll_s)
+        waited += poll_s
+        if TIMESYNC_MARKER.exists():
+            log.info("system clock synchronized after ~%ds", waited)
+            return True
+    log.warning("clock-sync marker absent after %ds — proceeding with possibly stale clock",
+                timeout_s)
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 def run(cfg):
     processed = set()  # (norad, aos_unix) already handled this process lifetime
+    wait_for_clock_sync()
     log.info("wxsat scheduler starting (dry_run=%s, sats=%s, min_elev=%g)",
              cfg["dry_run"], [s["name"] for s in cfg["satellites"]], cfg["min_elev"])
     while True:

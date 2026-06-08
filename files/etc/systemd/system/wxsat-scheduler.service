@@ -1,7 +1,10 @@
 [Unit]
 Description=Weather-satellite (Meteor-M LRPT) capture scheduler
-After=network-online.target icecast2.service sdr-fm@active.service
+After=network-online.target time-sync.target icecast2.service sdr-fm@active.service
 Wants=network-online.target
+# The Pi has no battery-backed RTC; order after the clock-sync point so we
+# don't compute the pass schedule against the stale restored-at-boot time.
+# (Belt-and-suspenders: the daemon also waits for the sync marker in code.)
 
 [Service]
 Type=simple
