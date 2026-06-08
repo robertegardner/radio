@@ -142,6 +142,20 @@
   .dec-line { display: flex; gap: .5rem; margin-bottom: .55rem; flex-wrap: wrap; }
   .dec-txt { font-family: 'Courier New', monospace; font-size: .72rem; color: var(--text-dim); margin-top: .35rem; }
   @media (max-width: 560px) { .live-sky { width: 100%; } #sky { width: 168px; } }
+
+  /* Pass-review link + modal */
+  .pv { background: none; border: 1px solid var(--line); color: var(--blue); cursor: pointer;
+        border-radius: 6px; font-size: .72rem; padding: .2rem .5rem; }
+  .pv:hover { border-color: var(--blue); background: rgba(109,176,240,.08); }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 50;
+           display: none; align-items: flex-start; justify-content: center; padding: 1.2rem; overflow: auto; }
+  .modal-card { background: linear-gradient(180deg, #1a1c22 0%, var(--bg-panel) 100%);
+                border: 1px solid var(--amber-dim); border-radius: 14px; padding: 1.1rem 1.2rem;
+                width: 100%; max-width: 760px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+  .modal-head .pm-title { color: var(--amber); font-weight: 700; font-size: .95rem; }
+  #pmWf { width: 100%; height: 220px; background: #05060a; border-radius: 8px; display: block;
+          box-shadow: inset 0 1px 4px rgba(0,0,0,.7); }
 </style>
 </head>
 <body>
@@ -207,6 +221,27 @@
     <h2>Past captures</h2>
     <div id="capturesWrap"><div class="empty">Loading…</div></div>
   </section>
+</div>
+
+<div class="modal" id="passModal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <span class="pm-title" id="pmTitle">Pass</span>
+      <button class="del" id="pmClose">✕ Close</button>
+    </div>
+    <div class="live-grid">
+      <div class="live-spectrum">
+        <canvas id="pmWf" width="512" height="220"></canvas>
+        <div class="wf-axis"><span id="pmLo">−250 kHz</span><span>137.9 MHz</span><span id="pmHi">+250 kHz</span></div>
+        <div class="dec-txt" id="pmLevel"></div>
+      </div>
+      <div class="live-sky">
+        <canvas id="pmSky" width="168" height="168"></canvas>
+        <div class="sky-readout" id="pmSkyTxt"></div>
+      </div>
+    </div>
+    <div class="dec-line" id="pmDecode" style="margin-top:.9rem"></div>
+  </div>
 </div>
 
 <script>
@@ -337,7 +372,10 @@ function cardHTML(c) {
       ${note}
       <div class="foot">
         <span class="badge ${oc}">${label}</span>
-        <button class="del" data-id="${escapeHTML(c.id)}">Delete</button>
+        <span style="display:flex;gap:.4rem">
+          ${c.has_panel ? `<button class="pv" data-pv="${escapeHTML(c.id)}">Pass view</button>` : ''}
+          <button class="del" data-id="${escapeHTML(c.id)}">Delete</button>
+        </span>
       </div>
     </div>
   </div>`;
@@ -362,6 +400,14 @@ document.addEventListener('click', async (e) => {
     else { btn.disabled = false; alert('Delete failed.'); }
   } catch (err) { btn.disabled = false; alert('Delete failed.'); }
 });
+
+// Pass-view open/close (delegated).
+document.addEventListener('click', (e) => {
+  const pv = e.target.closest('[data-pv]');
+  if (pv) { openPassView(pv.dataset.pv); return; }
+  if (e.target.id === 'pmClose' || e.target.id === 'passModal') closePassView();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePassView(); });
 
 /* ---- Live pass: spectrum/waterfall, signal, sky track, decode ---- */
 let liveActive = false;   // set from tuner status; gates live polling
@@ -403,8 +449,8 @@ function skyProj(el, az, cx, cy, R) {
   const r = (90 - el) / 90 * R, a = az * Math.PI / 180;
   return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
 }
-function drawSky(track, az, el) {
-  const c = document.getElementById('sky'); if (!c) return;
+function drawSky(c, track, az, el) {
+  if (!c) return;
   const x = c.getContext('2d'), W = c.width, H = c.height, cx = W/2, cy = H/2, R = W/2 - 12;
   x.clearRect(0, 0, W, H);
   x.strokeStyle = '#2c2e34'; x.fillStyle = '#555'; x.lineWidth = 1;
@@ -466,12 +512,65 @@ async function refreshLive() {
     document.getElementById('lvlMeter').classList.toggle('warn', pk >= 90);
     document.getElementById('lvlTxt').innerHTML =
       `peak <b>${pk.toFixed(1)}%</b> · rms ${d.rms != null ? d.rms.toFixed(0) : '—'}`;
-    drawSky(d.track, d.azim, d.elev);
+    drawSky(document.getElementById('sky'), d.track, d.azim, d.elev);
     document.getElementById('skyText').textContent =
       d.elev != null && d.elev >= 0 ? `el ${d.elev.toFixed(1)}° · az ${Math.round(d.azim || 0)}°`
                                     : 'below horizon';
   }
 }
+
+/* ---- Pass review: replay a saved snapshot from the gallery ---- */
+function drawWaterfallMatrix(c, rows, fs, halfKhz) {
+  const x = c.getContext('2d'), W = c.width, H = c.height;
+  x.fillStyle = '#05060a'; x.fillRect(0, 0, W, H);
+  if (!rows || !rows.length) {
+    x.fillStyle = '#555'; x.font = '12px monospace'; x.textAlign = 'center';
+    x.fillText('no spectrum recorded for this pass', W / 2, H / 2); return;
+  }
+  const n = rows[0].length, half = halfKhz * 1000, frac = Math.min(1, (2 * half) / fs);
+  const lo = Math.floor(n * (0.5 - frac / 2)), hi = Math.ceil(n * (0.5 + frac / 2));
+  const R = rows.length;
+  const img = x.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    const row = rows[Math.min(R - 1, Math.floor(y / H * R))];
+    for (let px = 0; px < W; px++) {
+      const bin = lo + Math.floor(px / W * (hi - lo));
+      const rgb = wfColor(row[Math.max(0, Math.min(n - 1, bin))]).match(/\d+/g);
+      const o = (y * W + px) * 4;
+      img.data[o] = +rgb[0]; img.data[o+1] = +rgb[1]; img.data[o+2] = +rgb[2]; img.data[o+3] = 255;
+    }
+  }
+  x.putImageData(img, 0, 0);
+}
+
+async function openPassView(id) {
+  let d;
+  try { d = await (await fetch('/api/wxsat/pass/' + encodeURIComponent(id))).json(); }
+  catch (e) { return; }
+  if (!d || !d.available) { alert('No live-panel data was recorded for this pass.'); return; }
+  const elev = d.max_elev != null ? ` · ${Math.round(d.max_elev)}° max` : '';
+  $('pmTitle').textContent = (d.satellite || 'Pass') + ' · ' + fmtLocal(d.aos_unix) + elev;
+  const fs = d.samplerate || 1000000, half = d.half_khz || 250;
+  drawWaterfallMatrix($('pmWf'), d.waterfall, fs, half);
+  $('pmLo').textContent = '−' + Math.round(half) + ' kHz';
+  $('pmHi').textContent = '+' + Math.round(half) + ' kHz';
+  const peaks = (d.level || []).map(s => s[1]).filter(v => v != null);
+  $('pmLevel').innerHTML = peaks.length
+    ? `peak signal <b>${Math.max(...peaks).toFixed(1)}%</b> ADC · ${(d.waterfall || []).length} spectra over the pass`
+    : 'no signal samples recorded';
+  drawSky($('pmSky'), d.track, null, null);
+  $('pmSkyTxt').textContent = d.max_elev != null ? `pass arc · ${Math.round(d.max_elev)}° max elevation` : '';
+  const dec = d.decode || {};
+  const chip = (t, cls) => `<span class="chip ${cls || ''}">${t}</span>`;
+  $('pmDecode').innerHTML =
+    chip('Viterbi ' + (dec.viterbi || '—'), dec.viterbi === 'SYNC' ? 'sync' : (dec.viterbi ? 'nosync' : '')) +
+    chip('Deframer ' + (dec.deframer || '—'), dec.deframer === 'SYNC' ? 'sync' : (dec.deframer ? 'nosync' : '')) +
+    chip('best SNR ' + (dec.best_snr != null ? dec.best_snr + ' dB' : '—')) +
+    chip(dec.synced === true ? 'frames synced' : (dec.synced === false ? 'no sync' : 'decode n/a'),
+         dec.synced === true ? 'sync' : (dec.synced === false ? 'nosync' : ''));
+  $('passModal').style.display = 'flex';
+}
+function closePassView() { $('passModal').style.display = 'none'; }
 
 function refreshAll() { refreshStatus(); refreshSpace(); refreshPasses(); refreshCaptures(); }
 refreshAll();

@@ -477,6 +477,15 @@ def _wxsat_captures():
     return data.get("captures", []) if isinstance(data, dict) else []
 
 
+def _pass_snapshot_path(outdir):
+    """Path to a capture's reviewable pass-panel snapshot, or None if the outdir
+    is missing/unsafe. Our outdirs are single timestamp components."""
+    outdir = str(outdir or "")
+    if not outdir or "/" in outdir or ".." in outdir:
+        return None
+    return WXSAT_DIR / outdir / "pass.json"
+
+
 @app.route("/api/wxsat/captures")
 def api_wxsat_captures():
     caps = sorted(_wxsat_captures(), key=lambda c: c.get("aos_unix", 0), reverse=True)
@@ -486,6 +495,11 @@ def api_wxsat_captures():
         recent = 0
     if recent > 0:
         caps = caps[:recent]
+    # Flag which captures have a replayable live-panel snapshot on disk so the
+    # gallery only offers "Pass view" where there's something to show.
+    for c in caps:
+        snap = _pass_snapshot_path(c.get("outdir"))
+        c["has_panel"] = bool(snap and snap.exists())
     return jsonify({"captures": caps})
 
 
@@ -570,6 +584,20 @@ def api_wxsat_live():
     if not data or (time.time() - data.get("updated", 0)) > 8:
         return jsonify({"live": False})
     data["live"] = True
+    return jsonify(data)
+
+
+@app.route("/api/wxsat/pass/<cid>")
+def api_wxsat_pass(cid):
+    """Replayable pass-panel snapshot (waterfall + sky track + decode summary)
+    saved by wxsat_live.py, for reviewing a pass after the live view is gone.
+    Public-safe read. {available:false} if the pass has no saved panel."""
+    rec = next((c for c in _wxsat_captures() if c.get("id") == cid), None)
+    snap = _pass_snapshot_path(rec.get("outdir")) if rec else None
+    data = _load_json(snap) if snap else None
+    if not data:
+        return jsonify({"available": False})
+    data["available"] = True
     return jsonify(data)
 
 

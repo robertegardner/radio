@@ -24,6 +24,7 @@ Inputs (env, set by wxsat_capture.sh):
 """
 import json
 import os
+import signal
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -192,11 +193,50 @@ def main():
     track = SkyTrack(norad, lat, lon, alt)
     arc = track.arc(aos, los) if (aos and los) else []
 
-    deadline = time.time() + (max(1800, (los - time.time()) + 1200) if los else 1800)
+    # Persistent, reviewable snapshot — written into the capture dir so the panel
+    # can be replayed from the gallery long after the pass (and after the IQ is
+    # pruned). The live /run frame is ephemeral; this one survives.
+    snapshot_path = out_dir / "pass.json"
+    wf_rows, lvl = [], []          # accumulated waterfall rows + level samples
+    best_snr = [None]              # boxed so the snapshot closure sees updates
+    last_decode = [{}]
+    half_khz = min(250.0, fs / 2000.0)
 
+    def save_snapshot():
+        def thin(seq, m=240):
+            if len(seq) <= m:
+                return seq
+            step = len(seq) / m
+            return [seq[int(i * step)] for i in range(m)]
+        snap = {
+            "satellite": sat, "norad": norad, "aos_unix": aos, "los_unix": los,
+            "max_elev": (round(max((r[1] for r in arc)), 1) if arc else None),
+            "samplerate": fs, "freq_mhz": freq_mhz, "half_khz": round(half_khz, 1),
+            "waterfall": thin(wf_rows), "level": thin(lvl), "track": arc,
+            "decode": {**last_decode[0], "best_snr": best_snr[0]},
+            "saved": int(time.time()),
+        }
+        try:
+            tmp = snapshot_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(snap))
+            os.replace(tmp, snapshot_path)
+        except OSError:
+            pass
+
+    def _on_term(*_):
+        save_snapshot()
+        os._exit(0)
+    try:
+        signal.signal(signal.SIGTERM, _on_term)
+    except (ValueError, OSError):
+        pass
+
+    deadline = time.time() + (max(1800, (los - time.time()) + 1200) if los else 1800)
+    tick = 0
     while time.time() < deadline:
         try:
             now = time.time()
+            tick += 1
             # Phase comes from capture.log markers, not IQ-growth: the capture
             # script logs "wxsat: decoding" when the SDR is done and the offline
             # decode begins, and a terminal line when finished. (IQ-growth is
@@ -217,12 +257,21 @@ def main():
                 dec = _parse_decode(log_path)
                 payload.update(dec)
                 payload["done"] = done or dec.get("done")
+                last_decode[0] = {k: dec.get(k) for k in
+                                  ("decode_pct", "snr", "viterbi", "deframer", "synced")}
+                if dec.get("snr") is not None:
+                    best_snr[0] = dec["snr"] if best_snr[0] is None else max(best_snr[0], dec["snr"])
                 _atomic_write(payload)
+                if tick % 8 == 0:
+                    save_snapshot()
                 if payload["done"]:
                     break
             else:
                 fft, rms, peak = _spectrum_and_level(iq_path)
                 lk = track.look(now)
+                if fft is not None:
+                    wf_rows.append(fft)
+                    lvl.append([int(now), peak, rms])
                 payload.update({
                     "fft": fft, "rms": rms, "peak_pct": peak,
                     "elev": lk[1] if lk else None,
@@ -230,12 +279,15 @@ def main():
                     "track": arc,
                 })
                 _atomic_write(payload)
+                if tick % 8 == 0:
+                    save_snapshot()
         except Exception:
             pass
         time.sleep(POLL_S)
 
-    # Leave a final stale-able frame; the page drops the panel when state is no
-    # longer capturing/decoding and when `updated` ages out.
+    save_snapshot()
+    # Drop the ephemeral live frame; the page hides the live panel when the tuner
+    # leaves capturing/decoding and when `updated` ages out.
     try:
         LIVE_PATH.unlink()
     except OSError:
