@@ -26,6 +26,7 @@ install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/caption_orchestrator.py" /
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/ui_settings.py"         /opt/sdr-tuner/ui_settings.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_predict.py"       /opt/sdr-tuner/wxsat_predict.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_scheduler.py"     /opt/sdr-tuner/wxsat_scheduler.py
+install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_live.py"          /opt/sdr-tuner/wxsat_live.py
 # wxsat_capture.sh ships in Phase 2 (real capture); install only if present.
 [[ -f "$SRC/opt/sdr-tuner/wxsat_capture.sh" ]] && \
   install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_capture.sh"     /opt/sdr-tuner/wxsat_capture.sh

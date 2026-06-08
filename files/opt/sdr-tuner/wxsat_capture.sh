@@ -86,6 +86,8 @@ echo "wxsat: capture starting $(date -u +%Y-%m-%dT%H:%M:%SZ) — keep_iq_always=
 # UNLESS a decode failure asked us to keep it for post-mortem. Runs on every
 # exit path (normal, error, signal, or SatDump hang/kill).
 cleanup() {
+  # Stop the live-telemetry sidecar (best-effort; it never holds the SDR).
+  [[ -n "${LIVE_PID:-}" ]] && kill "$LIVE_PID" 2>/dev/null || true
   # Hard disk floor: even when asked to keep the IQ, drop it if doing so would
   # leave the filesystem under MIN_FREE_GB. The capture.log + decoded products
   # (both small) always survive — only the multi-GB baseband is sacrificed.
@@ -138,6 +140,12 @@ while [[ "$(free_gb)" =~ ^[0-9]+$ && "$(free_gb)" -lt "$need_gb" ]]; do
   echo "wxsat: low disk ($(free_gb)G < ${need_gb}G) — reclaiming old IQ: $oldest" >&2
   rm -f "$oldest"
 done
+
+# Live per-pass telemetry for the /wxsat page (spectrum/level while recording,
+# decode progress/SNR while decoding). Best-effort: failure here never affects
+# the capture. Runs for our whole lifetime; the cleanup trap kills it.
+python3 /opt/sdr-tuner/wxsat_live.py &
+LIVE_PID=$!
 
 echo "wxsat: stopping stream for a ${DUR}s capture on ${FREQ_MHZ} MHz / ${ANTENNA}"
 sudo /usr/bin/systemctl stop sdr-fm@active

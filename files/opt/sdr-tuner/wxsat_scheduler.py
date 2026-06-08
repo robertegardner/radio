@@ -262,7 +262,11 @@ def do_capture(p, cfg, authorized=False):
     out_dir = WXSAT_DIR / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     reldir = out_dir.name  # relative to WXSAT_DIR; capture.log + IQ + products live here
     duration = max(60, int(p["los_unix"] - time.time()) + int(cfg["post_los_s"]))
-    env = dict(os.environ, WXSAT_OUT_DIR=str(out_dir), WXSAT_DURATION=str(duration))
+    env = dict(os.environ, WXSAT_OUT_DIR=str(out_dir), WXSAT_DURATION=str(duration),
+               # Pass metadata for the live-telemetry sidecar's sky track.
+               WXSAT_AOS=str(int(p["aos_unix"])), WXSAT_LOS=str(int(p["los_unix"])),
+               WXSAT_SAT=str(p.get("satellite") or ""),
+               WXSAT_NORAD=str(p.get("norad") or ""))
     log.info("CAPTURE %s -> %s (%ss)", p["satellite"], out_dir, duration)
     write_status(cfg, "capturing", capturing=p)
     try:

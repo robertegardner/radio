@@ -118,6 +118,30 @@
   .chip b { color: var(--text); font-weight: 600; }
   .chip.live { color: var(--green); border-color: rgba(109,240,155,.4); }
   .chip.auth { color: var(--amber); border-color: var(--amber-dim); background: rgba(255,174,58,.06); }
+  .chip.sync   { color: var(--green); border-color: rgba(109,240,155,.4); }
+  .chip.nosync { color: var(--red);   border-color: rgba(240,109,109,.4); }
+
+  /* Live pass panel */
+  .live-panel { border-color: var(--amber-dim);
+    box-shadow: 0 12px 40px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.03), 0 0 24px rgba(255,174,58,.05); }
+  .live-panel h2 { color: var(--amber); display: flex; justify-content: space-between; gap: 1rem; }
+  .live-panel h2 .live-sub { color: var(--text-dim); font-weight: 600; letter-spacing: .04em;
+                             text-transform: none; font-size: .72rem; }
+  .live-grid { display: flex; gap: 1.1rem; flex-wrap: wrap; align-items: flex-start; }
+  .live-spectrum { flex: 1; min-width: 260px; }
+  #wf { width: 100%; height: 150px; background: #05060a; border-radius: 8px;
+        display: block; box-shadow: inset 0 1px 4px rgba(0,0,0,.7); }
+  .wf-axis { display: flex; justify-content: space-between; font-size: .6rem; color: var(--text-faint);
+             font-family: 'Courier New', monospace; margin-top: .25rem; }
+  .lvl-row { display: flex; align-items: center; gap: .6rem; margin-top: .7rem; }
+  .lvl-label { font-size: .68rem; color: var(--text-dim); width: 3.4em; text-transform: uppercase; letter-spacing: .06em; }
+  .live-sky { width: 168px; text-align: center; flex: none; }
+  #sky { background: #05060a; border-radius: 50%; box-shadow: inset 0 1px 6px rgba(0,0,0,.7); }
+  .sky-readout { font-size: .7rem; color: var(--text-dim); font-family: 'Courier New', monospace; margin-top: .35rem; }
+  .decode-row { margin-top: 1rem; padding-top: .9rem; border-top: 1px solid var(--line); }
+  .dec-line { display: flex; gap: .5rem; margin-bottom: .55rem; flex-wrap: wrap; }
+  .dec-txt { font-family: 'Courier New', monospace; font-size: .72rem; color: var(--text-dim); margin-top: .35rem; }
+  @media (max-width: 560px) { .live-sky { width: 100%; } #sky { width: 168px; } }
 </style>
 </head>
 <body>
@@ -137,6 +161,34 @@
     Dry-run mode — the scheduler is logging capture/skip decisions but not yet
     touching the SDR. The radio stream is never interrupted.
   </div>
+
+  <section class="panel live-panel" id="livePanel" style="display:none">
+    <h2><span id="liveTitle">Live pass</span><span class="live-sub" id="liveSub"></span></h2>
+    <div class="live-grid">
+      <div class="live-spectrum">
+        <canvas id="wf" width="512" height="150"></canvas>
+        <div class="wf-axis"><span id="wfLo">−250 kHz</span><span>137.9 MHz</span><span id="wfHi">+250 kHz</span></div>
+        <div class="lvl-row">
+          <span class="lvl-label">Signal</span>
+          <div class="meter" id="lvlMeter"><span id="lvlBar"></span></div>
+          <span class="space-txt" id="lvlTxt">—</span>
+        </div>
+      </div>
+      <div class="live-sky">
+        <canvas id="sky" width="168" height="168"></canvas>
+        <div class="sky-readout" id="skyText">—</div>
+      </div>
+    </div>
+    <div class="decode-row" id="decodeRow" style="display:none">
+      <div class="dec-line">
+        <span class="chip" id="decViterbi">Viterbi —</span>
+        <span class="chip" id="decDeframer">Deframer —</span>
+        <span class="chip" id="decSnr">SNR —</span>
+      </div>
+      <div class="meter"><span id="decBar" style="background:linear-gradient(90deg,var(--blue),var(--green))"></span></div>
+      <div class="dec-txt" id="decTxt">Decoding the recorded pass…</div>
+    </div>
+  </section>
 
   <section class="panel">
     <h2>Storage</h2>
@@ -188,6 +240,12 @@ async function refreshStatus() {
     else if (s.tuner === 'decoding')  txt.innerHTML = `Tuner: <b>decoding ${escapeHTML(sat)}</b> — stream back up`;
     else if (s.tuner === 'streaming') txt.innerHTML = 'Tuner: <b>streaming</b> the radio';
     else                              txt.innerHTML = 'Tuner: <b>idle</b>';
+
+    // Drive the live-pass panel only while a capture/decode is in progress.
+    const wasActive = liveActive;
+    liveActive = (s.tuner === 'capturing' || s.tuner === 'decoding');
+    if (liveActive && !wasActive) refreshLive();   // show promptly on transition
+    else if (!liveActive && wasActive) showLive(false);
 
     // Radio consumers (human listeners on the stream).
     const lc = $('listenChip');
@@ -305,10 +363,121 @@ document.addEventListener('click', async (e) => {
   } catch (err) { btn.disabled = false; alert('Delete failed.'); }
 });
 
+/* ---- Live pass: spectrum/waterfall, signal, sky track, decode ---- */
+let liveActive = false;   // set from tuner status; gates live polling
+
+function fmtCountdown(sec) {
+  if (sec == null || sec < 0) return "—";
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+const WF_STOPS = [[0,0,0],[12,20,64],[0,150,150],[120,220,90],[250,220,80],[240,90,60]];
+function wfColor(v) {                       // v in dB, ~[-5,45] -> rgb
+  let t = (v + 5) / 50; t = Math.max(0, Math.min(1, t));
+  const f = t * (WF_STOPS.length - 1), i = Math.floor(f), k = f - i;
+  const a = WF_STOPS[i], b = WF_STOPS[Math.min(i + 1, WF_STOPS.length - 1)];
+  return `rgb(${a[0]+(b[0]-a[0])*k|0},${a[1]+(b[1]-a[1])*k|0},${a[2]+(b[2]-a[2])*k|0})`;
+}
+
+function pushWaterfall(fft, fs) {
+  const c = document.getElementById('wf'); if (!c || !fft) return;
+  const ctx = c.getContext('2d'), W = c.width, H = c.height;
+  const img = ctx.getImageData(0, 0, W, H - 1);
+  ctx.putImageData(img, 0, 1);              // scroll down 1px
+  // Show central ±250 kHz (clamped to Nyquist) of the full-span fft.
+  const n = fft.length, half = Math.min(250000, fs / 2);
+  const frac = (2 * half) / fs;
+  const lo = Math.floor(n * (0.5 - frac / 2)), hi = Math.ceil(n * (0.5 + frac / 2));
+  for (let x = 0; x < W; x++) {
+    const bin = lo + Math.floor(x / W * (hi - lo));
+    ctx.fillStyle = wfColor(fft[Math.max(0, Math.min(n - 1, bin))]);
+    ctx.fillRect(x, 0, 1, 1);
+  }
+  const kHz = Math.round(half / 1000);
+  document.getElementById('wfLo').textContent = '−' + kHz + ' kHz';
+  document.getElementById('wfHi').textContent = '+' + kHz + ' kHz';
+}
+
+function skyProj(el, az, cx, cy, R) {
+  const r = (90 - el) / 90 * R, a = az * Math.PI / 180;
+  return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
+}
+function drawSky(track, az, el) {
+  const c = document.getElementById('sky'); if (!c) return;
+  const x = c.getContext('2d'), W = c.width, H = c.height, cx = W/2, cy = H/2, R = W/2 - 12;
+  x.clearRect(0, 0, W, H);
+  x.strokeStyle = '#2c2e34'; x.fillStyle = '#555'; x.lineWidth = 1;
+  x.font = '9px monospace'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  [0, 30, 60].forEach(e => { const r = (90 - e) / 90 * R;
+    x.beginPath(); x.arc(cx, cy, r, 0, 7); x.stroke(); });
+  [['N',cx,cy-R-5],['S',cx,cy+R+6],['E',cx+R+6,cy],['W',cx-R-6,cy]]
+    .forEach(([t,px,py]) => x.fillText(t, px, py));
+  if (track && track.length) {              // pass arc (el >= 0 only)
+    x.strokeStyle = 'rgba(255,174,58,.55)'; x.lineWidth = 1.5; x.beginPath();
+    let started = false;
+    track.forEach(p => { if (p[1] < 0) return; const [px, py] = skyProj(p[1], p[2], cx, cy, R);
+      if (!started) { x.moveTo(px, py); started = true; } else x.lineTo(px, py); });
+    x.stroke();
+  }
+  if (el != null && el >= 0) {              // current position
+    const [px, py] = skyProj(el, az || 0, cx, cy, R);
+    x.fillStyle = '#ffae3a'; x.beginPath(); x.arc(px, py, 4, 0, 7); x.fill();
+    x.strokeStyle = 'rgba(255,174,58,.9)'; x.lineWidth = 2; x.stroke();
+  }
+}
+
+function showLive(on) { document.getElementById('livePanel').style.display = on ? '' : 'none'; }
+
+async function refreshLive() {
+  if (!liveActive) { showLive(false); return; }
+  let d;
+  try { d = await (await fetch('/api/wxsat/live')).json(); } catch (e) { return; }
+  if (!d || !d.live) { showLive(false); return; }
+  showLive(true);
+  const now = Date.now() / 1000;
+  const sat = escapeHTML(d.satellite || 'satellite');
+
+  if (d.phase === 'decoding') {
+    document.getElementById('liveTitle').textContent = 'Decoding ' + (d.satellite || '');
+    document.getElementById('liveSub').textContent = 'offline decode — stream back up';
+    document.getElementById('decodeRow').style.display = '';
+    const vit = document.getElementById('decViterbi'), def = document.getElementById('decDeframer');
+    vit.textContent = 'Viterbi ' + (d.viterbi || '—');
+    vit.className = 'chip ' + (d.viterbi === 'SYNC' ? 'sync' : (d.viterbi ? 'nosync' : ''));
+    def.textContent = 'Deframer ' + (d.deframer || '—');
+    def.className = 'chip ' + (d.deframer === 'SYNC' ? 'sync' : (d.deframer ? 'nosync' : ''));
+    document.getElementById('decSnr').textContent = 'SNR ' + (d.snr != null ? d.snr + ' dB' : '—');
+    document.getElementById('decBar').style.width = (d.decode_pct || 0) + '%';
+    document.getElementById('decTxt').textContent =
+      d.synced === true ? 'Frames synced — building image…'
+      : d.synced === false ? 'No sync — likely too weak this pass.'
+      : 'Decoding the recorded pass… ' + (d.decode_pct != null ? Math.round(d.decode_pct) + '%' : '');
+  } else {
+    document.getElementById('decodeRow').style.display = 'none';
+    document.getElementById('liveTitle').textContent = 'Recording ' + (d.satellite || '');
+    const losIn = d.los_unix ? fmtCountdown(d.los_unix - now) : '—';
+    const elTxt = d.elev != null ? (d.elev >= 0 ? d.elev.toFixed(0) + '°' : 'below horizon') : '—';
+    document.getElementById('liveSub').textContent = `el ${elTxt} · LOS in ${losIn}`;
+    pushWaterfall(d.fft, d.samplerate || 1000000);
+    // Signal meter: peak % of ADC full-scale (headroom check).
+    const pk = d.peak_pct || 0;
+    document.getElementById('lvlBar').style.width = Math.min(100, pk) + '%';
+    document.getElementById('lvlMeter').classList.toggle('warn', pk >= 90);
+    document.getElementById('lvlTxt').innerHTML =
+      `peak <b>${pk.toFixed(1)}%</b> · rms ${d.rms != null ? d.rms.toFixed(0) : '—'}`;
+    drawSky(d.track, d.azim, d.elev);
+    document.getElementById('skyText').textContent =
+      d.elev != null && d.elev >= 0 ? `el ${d.elev.toFixed(1)}° · az ${Math.round(d.azim || 0)}°`
+                                    : 'below horizon';
+  }
+}
+
 function refreshAll() { refreshStatus(); refreshSpace(); refreshPasses(); refreshCaptures(); }
 refreshAll();
 setInterval(refreshAll, 30000);
 setInterval(refreshStatus, 10000);   // tuner status reacts faster than the gallery
+setInterval(refreshLive, 1500);      // live spectrum/decode (no-op fetch when idle)
 </script>
 </body>
 </html>

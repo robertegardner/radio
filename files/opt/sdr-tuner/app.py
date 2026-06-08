@@ -33,6 +33,7 @@ WXSAT_CAPTURES_PATH = WXSAT_DIR / "captures.json"
 WXSAT_PASSES_PATH   = Path("/run/sdr-streams/wxsat_passes.json")
 WXSAT_STATUS_PATH   = Path("/run/sdr-streams/wxsat_status.json")
 WXSAT_AUTH_PATH     = Path("/run/sdr-streams/wxsat_authorized.json")
+WXSAT_LIVE_PATH     = Path("/run/sdr-streams/wxsat_live.json")
 
 SERVICE          = "sdr-fm@active"
 SCAN_FM_SERVICE  = "sdr-scan.service"
@@ -558,6 +559,18 @@ def api_wxsat_status():
         "listeners":       listeners,
         "listeners_ok":    listeners_ok,
     })
+
+
+@app.route("/api/wxsat/live")
+def api_wxsat_live():
+    """Live per-pass telemetry written by wxsat_live.py during a capture
+    (spectrum + level while recording, decode progress/SNR while decoding).
+    Public-safe read. Returns {live:false} when idle or the frame is stale."""
+    data = _load_json(WXSAT_LIVE_PATH)
+    if not data or (time.time() - data.get("updated", 0)) > 8:
+        return jsonify({"live": False})
+    data["live"] = True
+    return jsonify(data)
 
 
 @app.route("/api/wxsat/authorize", methods=["POST"])
