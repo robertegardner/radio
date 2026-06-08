@@ -168,8 +168,19 @@ install -d -m 0755 -o radio -g radio /var/lib/sdr-streams/wxsat/.config/satdump
 # celestrak at localhost makes the connect fail in milliseconds; SatDump then
 # gives up after a few retries (~5 s) and proceeds to decode. We supply real
 # TLEs ourselves (wxsat_predict.py / the capture script seeds satdump_tles.txt).
+#
+# IMPORTANT: this Pi's /etc/hosts is managed by cloud-init (manage_etc_hosts:
+# True) and is REGENERATED from a template on every boot — appending to
+# /etc/hosts alone is wiped at the next reboot (the celestrak hang then returns
+# and capture decodes time out). So also write the line into the cloud-init
+# template when present, which is the durable source of truth.
+CELESTRAK_LINE='127.0.0.1 celestrak.org celestrak.com # wxsat: celestrak unreachable from this Pi; force fast-fail so SatDump proceeds'
 if ! grep -q 'wxsat: celestrak' /etc/hosts; then
-  echo '127.0.0.1 celestrak.org celestrak.com # wxsat: celestrak unreachable from this Pi; force fast-fail so SatDump proceeds' >> /etc/hosts
+  echo "$CELESTRAK_LINE" >> /etc/hosts
+fi
+HOSTS_TMPL=/etc/cloud/templates/hosts.debian.tmpl
+if [ -f "$HOSTS_TMPL" ] && ! grep -q 'wxsat: celestrak' "$HOSTS_TMPL"; then
+  echo "$CELESTRAK_LINE" >> "$HOSTS_TMPL"
 fi
 
 # ---------------------------------------------------------------------------
