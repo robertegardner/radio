@@ -495,11 +495,14 @@ def api_wxsat_captures():
         recent = 0
     if recent > 0:
         caps = caps[:recent]
-    # Flag which captures have a replayable live-panel snapshot on disk so the
-    # gallery only offers "Pass view" where there's something to show.
+    # Flag which captures have a replayable panel on disk ("Pass view"), and
+    # which still have a retained baseband.cs16 that can be rebuilt from
+    # ("Rebuild from IQ").
     for c in caps:
         snap = _pass_snapshot_path(c.get("outdir"))
         c["has_panel"] = bool(snap and snap.exists())
+        iq = snap.with_name("baseband.cs16") if snap else None
+        c["has_iq"] = bool(iq and iq.exists())
     return jsonify({"captures": caps})
 
 
@@ -599,6 +602,32 @@ def api_wxsat_pass(cid):
         return jsonify({"available": False})
     data["available"] = True
     return jsonify(data)
+
+
+@app.route("/api/wxsat/rebuild", methods=["POST"])
+def api_wxsat_rebuild():
+    """Reconstruct a pass panel offline from a retained baseband.cs16 (for a pass
+    whose live panel was missed). Spawns wxsat_rebuild.py detached so the request
+    returns immediately; the gallery picks up has_panel on its next refresh.
+    Mutating/expensive — gate behind admin auth like the delete route."""
+    payload = request.get_json(silent=True) or {}
+    cid = str(payload.get("id", "")).strip()
+    rec = next((c for c in _wxsat_captures() if c.get("id") == cid), None)
+    if not rec:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    snap = _pass_snapshot_path(rec.get("outdir"))
+    if not snap or not snap.with_name("baseband.cs16").exists():
+        return jsonify({"ok": False, "error": "no retained IQ for this pass"}), 400
+    try:
+        subprocess.Popen(
+            ["/usr/bin/python3", "/opt/sdr-tuner/wxsat_rebuild.py", cid],
+            cwd="/opt/sdr-tuner",
+            env=dict(os.environ, HOME="/var/lib/sdr-streams/wxsat"),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "started": True})
 
 
 @app.route("/api/wxsat/authorize", methods=["POST"])

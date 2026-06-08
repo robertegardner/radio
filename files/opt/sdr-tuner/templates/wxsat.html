@@ -372,8 +372,9 @@ function cardHTML(c) {
       ${note}
       <div class="foot">
         <span class="badge ${oc}">${label}</span>
-        <span style="display:flex;gap:.4rem">
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap;justify-content:flex-end">
           ${c.has_panel ? `<button class="pv" data-pv="${escapeHTML(c.id)}">Pass view</button>` : ''}
+          ${c.has_iq ? `<button class="pv" data-rb="${escapeHTML(c.id)}">${c.has_panel ? 'Rebuild' : 'Rebuild from IQ'}</button>` : ''}
           <button class="del" data-id="${escapeHTML(c.id)}">Delete</button>
         </span>
       </div>
@@ -401,12 +402,30 @@ document.addEventListener('click', async (e) => {
   } catch (err) { btn.disabled = false; alert('Delete failed.'); }
 });
 
-// Pass-view open/close (delegated).
+// Pass-view open/close + rebuild-from-IQ (delegated).
 document.addEventListener('click', (e) => {
   const pv = e.target.closest('[data-pv]');
   if (pv) { openPassView(pv.dataset.pv); return; }
+  const rb = e.target.closest('[data-rb]');
+  if (rb) { rebuildFromIq(rb); return; }
   if (e.target.id === 'pmClose' || e.target.id === 'passModal') closePassView();
 });
+
+async function rebuildFromIq(btn) {
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'Rebuilding…';
+  try {
+    const r = await fetch('/api/wxsat/rebuild', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: btn.dataset.rb}),
+    });
+    const j = await r.json();
+    if (!j.ok) { alert('Rebuild failed: ' + (j.error || '')); btn.disabled = false; btn.textContent = old; return; }
+    // Reconstruction runs in the background (reads the whole IQ); refresh the
+    // gallery a couple times to pick up the new "Pass view" link when it lands.
+    setTimeout(refreshCaptures, 25000);
+    setTimeout(refreshCaptures, 50000);
+  } catch (e) { alert('Rebuild failed.'); btn.disabled = false; btn.textContent = old; }
+}
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePassView(); });
 
 /* ---- Live pass: spectrum/waterfall, signal, sky track, decode ---- */
