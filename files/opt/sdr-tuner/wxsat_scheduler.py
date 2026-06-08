@@ -179,7 +179,8 @@ def _save_index(captures):
 
 
 def record_outcome(p, outcome, notation=None, reason=None,
-                   image=None, thumb=None, listeners=0, authorized=False):
+                   image=None, thumb=None, listeners=0, authorized=False,
+                   outdir=None):
     rec = {
         "id": f"{_slug(p['satellite'])}-{int(p['aos_unix'])}",
         "satellite": p["satellite"],
@@ -195,6 +196,9 @@ def record_outcome(p, outcome, notation=None, reason=None,
         "thumb": thumb,
         "listeners": listeners,
         "authorized": authorized,
+        # Relative path of the capture dir (holds capture.log + any retained IQ
+        # + SatDump products) so a pass can be diagnosed/re-decoded offline.
+        "outdir": outdir,
         "created": int(time.time()),
     }
     captures = _load_index()
@@ -254,6 +258,7 @@ def do_capture(p, cfg, authorized=False):
     """Run a real capture via wxsat_capture.sh (Phase 2). The script stops the
     stream, runs rx_sdr -> satdump, and ALWAYS restarts the stream via trap."""
     out_dir = WXSAT_DIR / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    reldir = out_dir.name  # relative to WXSAT_DIR; capture.log + IQ + products live here
     duration = max(60, int(p["los_unix"] - time.time()) + int(cfg["post_los_s"]))
     env = dict(os.environ, WXSAT_OUT_DIR=str(out_dir), WXSAT_DURATION=str(duration))
     log.info("CAPTURE %s -> %s (%ss)", p["satellite"], out_dir, duration)
@@ -264,14 +269,18 @@ def do_capture(p, cfg, authorized=False):
         r = subprocess.run([CAPTURE_SCRIPT], env=env, capture_output=True,
                            text=True, timeout=duration + 600)
     except subprocess.TimeoutExpired:
-        return record_outcome(p, "failed", reason="capture timed out", authorized=authorized)
+        return record_outcome(p, "failed", reason="capture timed out",
+                              authorized=authorized, outdir=reldir)
     if r.returncode != 0:
         reason = (r.stderr or r.stdout or "capture failed").strip().splitlines()[-1:] or ["capture failed"]
-        return record_outcome(p, "failed", reason=reason[0][:200], authorized=authorized)
+        return record_outcome(p, "failed", reason=f"{reason[0][:180]} (see {reldir}/capture.log)",
+                              authorized=authorized, outdir=reldir)
     image, thumb = _best_product(out_dir)
     if not image:
-        return record_outcome(p, "failed", reason="no image product decoded", authorized=authorized)
-    return record_outcome(p, "image", image=image, thumb=thumb or image, authorized=authorized)
+        return record_outcome(p, "failed", reason=f"no image product decoded (see {reldir}/capture.log)",
+                              authorized=authorized, outdir=reldir)
+    return record_outcome(p, "image", image=image, thumb=thumb or image,
+                          authorized=authorized, outdir=reldir)
 
 
 def _best_product(out_dir):

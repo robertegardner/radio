@@ -17,6 +17,14 @@
 #                           (default: the other of 72k/80k Meteor LRPT)
 #   WXSAT_KEEP_IQ_ON_FAIL   1 = retain the raw baseband when NO pipeline syncs,
 #                           for offline post-mortem (default 1); 0 = always drop.
+#   WXSAT_KEEP_IQ_ALWAYS    1 = retain the raw baseband on EVERY pass, even on a
+#                           successful decode (debug mode — lets you re-decode /
+#                           spectrum-inspect a good pass too). Default 0. Each
+#                           retained IQ is large (~4 MB/s of capture); turn this
+#                           off once we have a confirmed-good capture.
+#
+# Every pass writes a full $OUT/capture.log (rx_sdr + SatDump output + this
+# script's trace) so the decode can be diagnosed offline regardless of outcome.
 #
 # Decode strategy: M2-4 has been seen at both 72k and 80k symbol rates, and a
 # rate mismatch looks identical to "no signal" (flat 0 dB SNR, Viterbi NOSYNC).
@@ -37,8 +45,18 @@ SAMPLERATE="${SAMPLERATE:-1000000}"
 GAIN="${GAIN:-40}"
 LRPT_PIPELINE="${LRPT_PIPELINE:-meteor_m2-x_lrpt}"
 KEEP_IQ_ON_FAIL="${WXSAT_KEEP_IQ_ON_FAIL:-1}"
+KEEP_IQ_ALWAYS="${WXSAT_KEEP_IQ_ALWAYS:-0}"
+MIN_FREE_GB="${WXSAT_MIN_FREE_GB:-2}"
 export HOME="${HOME:-/var/lib/sdr-streams/wxsat}"
 TLE_DIR="/var/lib/sdr-streams/wxsat/tle"
+# Parent of all per-pass capture dirs (the scheduler creates OUT as
+# WXSAT_DIR/<timestamp>); used to reclaim old IQ across passes.
+WXSAT_DIR="$(dirname "$OUT")"
+
+# Whole-GB free space on the filesystem holding the capture dir. Used as a hard
+# floor: retaining a multi-GB IQ must never push the SD card to full (a full
+# root breaks the Flask app's state writes — see CLAUDE.md disk-pressure notes).
+free_gb() { df -BG --output=avail "$OUT" 2>/dev/null | tail -1 | tr -dc '0-9'; }
 
 # Fallback pipeline: explicit env wins, else swap 72k<->80k automatically.
 FALLBACK_PIPELINE="${LRPT_PIPELINE_FALLBACK:-}"
@@ -51,13 +69,33 @@ if [[ -z "$FALLBACK_PIPELINE" ]]; then
 fi
 
 IQ="$OUT/baseband.cs16"
-KEEP_IQ=0   # flipped to 1 on decode failure so the trap preserves the IQ
+# KEEP_IQ gates whether the trap/end preserves the raw baseband. It starts at
+# KEEP_IQ_ALWAYS (debug mode keeps every pass) and is force-set to 1 on a decode
+# failure so a no-sync pass is always retained for post-mortem.
+KEEP_IQ="$KEEP_IQ_ALWAYS"
 mkdir -p "$OUT"
+
+# Tee everything (this script's trace, rx_sdr stderr, SatDump's full decode log)
+# to a per-pass log so any pass can be diagnosed offline regardless of outcome.
+# Output still flows to our stdout, so the scheduler's capture_output is intact.
+LOG="$OUT/capture.log"
+exec > >(tee -a "$LOG") 2>&1
+echo "wxsat: capture starting $(date -u +%Y-%m-%dT%H:%M:%SZ) — keep_iq_always=${KEEP_IQ_ALWAYS} keep_iq_on_fail=${KEEP_IQ_ON_FAIL}"
 
 # ALWAYS bring the broadcast stream back (rule #1). Drop the bulky raw IQ too —
 # UNLESS a decode failure asked us to keep it for post-mortem. Runs on every
 # exit path (normal, error, signal, or SatDump hang/kill).
 cleanup() {
+  # Hard disk floor: even when asked to keep the IQ, drop it if doing so would
+  # leave the filesystem under MIN_FREE_GB. The capture.log + decoded products
+  # (both small) always survive — only the multi-GB baseband is sacrificed.
+  if [[ "$KEEP_IQ" == "1" && -s "$IQ" ]]; then
+    free="$(free_gb)"
+    if [[ -n "$free" && "$free" -lt "$MIN_FREE_GB" ]]; then
+      echo "wxsat: only ${free}G free (< ${MIN_FREE_GB}G floor) — dropping IQ despite keep request" >&2
+      KEEP_IQ=0
+    fi
+  fi
   if [[ "$KEEP_IQ" != "1" ]]; then
     rm -f "$IQ"
   fi
@@ -88,6 +126,18 @@ mkdir -p "$HOME/.config/satdump"
 if ls "$TLE_DIR"/*.tle >/dev/null 2>&1; then
   cat "$TLE_DIR"/*.tle > "$HOME/.config/satdump/satdump_tles.txt"
 fi
+
+# Make room before capturing: rx_sdr will write ~SAMPLERATE*4 bytes/s, and a
+# full SD card breaks the Flask app. Reclaim space by deleting the OLDEST
+# *retained* baseband.cs16 files first (small capture.logs + decoded products
+# are always preserved) until we have headroom for this capture plus the floor.
+need_gb=$(( (DUR * SAMPLERATE * 4 / 1000000000) + MIN_FREE_GB + 1 ))
+while [[ "$(free_gb)" =~ ^[0-9]+$ && "$(free_gb)" -lt "$need_gb" ]]; do
+  oldest="$(ls -1tr "$WXSAT_DIR"/*/baseband.cs16 2>/dev/null | grep -vF -- "$IQ" | head -1)"
+  [[ -z "$oldest" ]] && { echo "wxsat: low disk ($(free_gb)G < ${need_gb}G) and no old IQ to reclaim" >&2; break; }
+  echo "wxsat: low disk ($(free_gb)G < ${need_gb}G) — reclaiming old IQ: $oldest" >&2
+  rm -f "$oldest"
+done
 
 echo "wxsat: stopping stream for a ${DUR}s capture on ${FREQ_MHZ} MHz / ${ANTENNA}"
 sudo /usr/bin/systemctl stop sdr-fm@active
@@ -127,5 +177,9 @@ else
   exit 13
 fi
 
-rm -f "$IQ"
+if [[ "$KEEP_IQ_ALWAYS" == "1" ]]; then
+  echo "wxsat: decode OK — retaining IQ (debug mode): $IQ"
+else
+  rm -f "$IQ"
+fi
 echo "wxsat: capture complete -> $OUT"
