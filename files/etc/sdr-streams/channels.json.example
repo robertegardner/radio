@@ -1,0 +1,8 @@
+{
+  "_comment": "FM-multistation channel set (read by mux_supervisor.py). Written by Flask; the real file is gitignored. Max 3 channels (clean ceiling on this Pi alongside the scanner; the 4th glitches), all freqs within mux.env WINDOW_LO_MHZ..WINDOW_HI_MHZ (95.0-101.0). Mount is derived: primary -> fm.mp3 (so the existing UI/captions keep working), others -> m{freq}.mp3 with '.'->'_' (e.g. 95.7 -> m95_7.mp3). Exactly one channel should be primary (first wins; if none, the first is promoted). RDS costs CPU (redsea per channel) so it is opt-in on non-primary; the primary always gets it. stereo auto-blends to mono on weak pilot regardless.",
+  "channels": [
+    { "freq": 100.7, "stereo": true,  "rds": true,  "primary": true,  "bitrate": "192k" },
+    { "freq": 95.7,  "stereo": true,  "rds": false, "primary": false, "bitrate": "192k" },
+    { "freq": 99.3,  "stereo": false, "rds": false, "primary": false, "bitrate": "128k" }
+  ]
+}

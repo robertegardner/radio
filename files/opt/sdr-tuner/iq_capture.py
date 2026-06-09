@@ -45,7 +45,9 @@ from pathlib import Path
 import numpy as np
 
 MUX_ENV = "/etc/sdr-streams/mux.env"
-STATUS_PATH = Path("/run/sdr-streams/mux_status.json")
+# Capture-side status. The mux supervisor owns mux_status.json and folds this in;
+# in Phase 1 (no mux) this file is the capture's standalone status.
+STATUS_PATH = Path("/run/sdr-streams/iq_capture.json")
 
 # 65536 complex samples → 512 KB CF32 packets. Comfortably under the 4 MB
 # wmem_max/SO_SNDBUF ceiling (one SEQPACKET datagram must fit in the send

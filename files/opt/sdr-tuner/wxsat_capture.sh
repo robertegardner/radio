@@ -148,6 +148,12 @@ python3 /opt/sdr-tuner/wxsat_live.py &
 LIVE_PID=$!
 
 echo "wxsat: stopping stream for a ${DUR}s capture on ${FREQ_MHZ} MHz / ${ANTENNA}"
+# The dx-R2 opens for exactly one process. Stop BOTH the legacy mono stream and
+# (if engaged) FM-multistation mode — the mux + its IQ capture daemon hold the
+# device too. The cleanup trap restores legacy mono (known-good default); re-
+# engaging multistation after a pass is a manual choice.
+sudo /usr/bin/systemctl stop sdr-mux 2>/dev/null || true
+sudo /usr/bin/systemctl stop sdr-iq-capture 2>/dev/null || true
 sudo /usr/bin/systemctl stop sdr-fm@active
 sleep 5   # let the SDRplay API release the RSP before we grab it (Phase-0 lesson)
 

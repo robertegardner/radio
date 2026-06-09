@@ -148,7 +148,7 @@ done
 # mux_supervisor.py ships with FM-multistation Phase 2; install if present.
 [[ -f "$SRC/opt/sdr-tuner/mux_supervisor.py" ]] && \
   install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/mux_supervisor.py" /opt/sdr-tuner/mux_supervisor.py
-for t in index.html radio.html wxsat.html; do
+for t in index.html radio.html wxsat.html multi.html; do
   install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/$t" "/opt/sdr-tuner/templates/$t"
 done
 
@@ -189,6 +189,14 @@ fi
 install -m 0640 -o root -g radio "$SRC/etc/sdr-streams/mux.env.example" /etc/sdr-streams/mux.env.example
 if [[ ! -f /etc/sdr-streams/mux.env ]]; then
   install -m 0640 -o root -g radio "$SRC/etc/sdr-streams/mux.env.example" /etc/sdr-streams/mux.env
+fi
+
+# channels.json (FM-multistation channel set) — Flask writes it, so radio-owned 0660.
+install -m 0664 -o root -g radio "$SRC/etc/sdr-streams/channels.json.example" /etc/sdr-streams/channels.json.example
+if [[ ! -f /etc/sdr-streams/channels.json ]]; then
+  echo '{"channels": []}' > /etc/sdr-streams/channels.json
+  chown radio:radio /etc/sdr-streams/channels.json
+  chmod 0660 /etc/sdr-streams/channels.json
 fi
 
 # ---------------------------------------------------------------------------

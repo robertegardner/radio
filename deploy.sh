@@ -41,6 +41,7 @@ install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/channel_pipeline.sh"    /o
 install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/radio.html"   /opt/sdr-tuner/templates/radio.html
 install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/index.html"   /opt/sdr-tuner/templates/index.html
 install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/wxsat.html"   /opt/sdr-tuner/templates/wxsat.html
+install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/multi.html"   /opt/sdr-tuner/templates/multi.html
 
 # FM-multistation units (opt-in; NOT started here — legacy mono stays default).
 install -m 0644 -o root -g root "$SRC/etc/systemd/system/sdr-iq-capture.service" /etc/systemd/system/sdr-iq-capture.service
