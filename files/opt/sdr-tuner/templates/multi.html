@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ site_title }} — FM Multistation</title>
+<style>
+  :root { --bg:#11141a; --panel:#1b1f29; --line:#2a3140; --txt:#e6e9ef; --mut:#8b95a7;
+          --accent:#46b1ff; --good:#3ad29f; --warn:#ffb347; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:15px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:14px; padding:14px 18px;
+           border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  header a { color:var(--mut); text-decoration:none; font-size:13px; }
+  header a:hover { color:var(--accent); }
+  .wrap { max-width:980px; margin:0 auto; padding:18px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:16px; margin-bottom:16px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em;
+              color:var(--mut); margin:0 0 12px; }
+  .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px;
+          font-weight:600; }
+  .pill.on { background:rgba(58,210,159,.16); color:var(--good); }
+  .pill.off { background:rgba(139,149,167,.16); color:var(--mut); }
+  .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  button { background:#222836; color:var(--txt); border:1px solid var(--line);
+           border-radius:7px; padding:7px 13px; font-size:14px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#06131f; border-color:var(--accent);
+                   font-weight:600; }
+  button.danger { color:var(--bad); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); font-size:14px; }
+  th { color:var(--mut); font-weight:600; font-size:12px; }
+  select,input[type=number] { background:#222836; color:var(--txt); border:1px solid var(--line);
+           border-radius:6px; padding:5px 7px; font-size:14px; }
+  .chk { display:flex; align-items:center; gap:5px; }
+  .muted { color:var(--mut); font-size:13px; }
+  .meter { font-variant-numeric:tabular-nums; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; }
+  .card { background:#161a23; border:1px solid var(--line); border-radius:9px; padding:12px; }
+  .card .freq { font-size:20px; font-weight:700; }
+  .badge { font-size:11px; padding:1px 7px; border-radius:999px; margin-left:6px;
+           background:rgba(70,177,255,.15); color:var(--accent); }
+  .badge.mono { background:rgba(139,149,167,.16); color:var(--mut); }
+  .np { font-size:13px; color:var(--mut); margin:6px 0; min-height:18px; }
+  audio { width:100%; margin-top:6px; }
+  .err { color:var(--bad); font-size:13px; }
+  .grey { opacity:.4; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{ site_title }} · FM Multistation</h1>
+  <a href="/radio">◀ Radio</a><a href="/">Admin</a><a href="/wxsat">wxsat</a>
+</header>
+
+<div class="wrap">
+
+  <div class="panel">
+    <h2>Mode</h2>
+    <div class="row">
+      <span>Mux: <span id="muxPill" class="pill off">…</span></span>
+      <span>Capture: <span id="capPill" class="pill off">…</span></span>
+      <span class="meter muted" id="adcMeter"></span>
+      <span style="flex:1"></span>
+      <button id="startBtn" class="primary">Start multistation</button>
+      <button id="stopBtn" class="danger">Stop → mono</button>
+    </div>
+    <div class="muted" id="modeNote" style="margin-top:8px"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Channels <span class="muted" id="winNote"></span></h2>
+    <table>
+      <thead><tr><th>Station</th><th>Stereo</th><th>RDS</th><th>Primary</th><th>Bitrate</th><th></th></tr></thead>
+      <tbody id="chanBody"></tbody>
+    </table>
+    <div class="row" style="margin-top:10px">
+      <button id="addBtn">+ Add channel</button>
+      <span style="flex:1"></span>
+      <span class="err" id="saveErr"></span>
+      <button id="saveBtn" class="primary">Save &amp; apply</button>
+    </div>
+    <div class="muted" style="margin-top:8px">
+      Up to <span id="maxCh">4</span> channels, all within the window. Primary serves
+      <code>/fm.mp3</code> (+ RDS, captions). Saving applies live (SIGHUP) without
+      dropping unchanged channels.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Live mounts</h2>
+    <div class="cards" id="cards"><div class="muted">Not streaming.</div></div>
+  </div>
+
+</div>
+
+<script>
+const STREAM_BASE = {{ stream_base|tojson }};
+const ALLOWED_BITRATES = ["64k","96k","128k","192k","256k"];
+let WINDOW = {lo:95.0, hi:101.0};
+let MAXCH = 4;
+let stationList = [];     // [{freq_mhz, call, label, in_window}]
+let editor = [];          // working channel set being edited
+let players = {};         // mount -> bool (audio element exists)
+
+const $ = s => document.querySelector(s);
+function el(tag, attrs={}, ...kids){ const e=document.createElement(tag);
+  for(const k in attrs){ if(k==="class")e.className=attrs[k]; else if(k.startsWith("on"))e.addEventListener(k.slice(2),attrs[k]); else e.setAttribute(k,attrs[k]); }
+  for(const c of kids) e.append(c?.nodeType?c:document.createTextNode(c)); return e; }
+
+async function jget(u){ const r=await fetch(u); return r.json(); }
+async function jpost(u,b){ const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})}); return r.json(); }
+
+// ---- station list (for the freq picker, window-aware) ----
+async function loadStations(){
+  try {
+    const d = await jget("/api/stations");
+    stationList = (d.fm||[]).map(s=>({
+      freq: s.freq_mhz, call: s.call||s.ps||"", label: s.label||"",
+      in_window: s.freq_mhz>=WINDOW.lo && s.freq_mhz<=WINDOW.hi
+    })).sort((a,b)=>a.freq-b.freq);
+  } catch(e){ stationList=[]; }
+}
+
+function freqOptions(selected){
+  const sel = el("select");
+  // in-window stations selectable; out-of-window shown greyed + disabled
+  const inWin = stationList.filter(s=>s.in_window);
+  if(!inWin.length){
+    // fallback: let the user type any in-window freq
+    for(let f=Math.ceil(WINDOW.lo*10)/10; f<=WINDOW.hi+1e-9; f=Math.round((f+0.2)*10)/10)
+      sel.append(el("option",{value:f.toFixed(1)}, f.toFixed(1)+" MHz"));
+  } else {
+    for(const s of inWin)
+      sel.append(el("option",{value:s.freq.toFixed(1)}, s.freq.toFixed(1)+(s.call?` ${s.call}`:"")));
+  }
+  for(const s of stationList.filter(s=>!s.in_window))
+    sel.append(el("option",{value:s.freq.toFixed(1), disabled:"", class:"grey"},
+      s.freq.toFixed(1)+(s.call?` ${s.call}`:"")+" — outside window"));
+  if(selected!=null) sel.value = Number(selected).toFixed(1);
+  return sel;
+}
+
+// ---- channel editor ----
+function renderEditor(){
+  const body = $("#chanBody"); body.innerHTML="";
+  editor.forEach((ch,i)=>{
+    const fsel = freqOptions(ch.freq);
+    fsel.addEventListener("change",e=>ch.freq=parseFloat(e.target.value));
+    const stereo = el("input",{type:"checkbox"}); stereo.checked=ch.stereo;
+    stereo.addEventListener("change",e=>ch.stereo=e.target.checked);
+    const rds = el("input",{type:"checkbox"}); rds.checked=ch.rds;
+    rds.addEventListener("change",e=>ch.rds=e.target.checked);
+    const prim = el("input",{type:"radio", name:"primary"}); prim.checked=ch.primary;
+    prim.addEventListener("change",()=>{ editor.forEach(c=>c.primary=false); ch.primary=true; renderEditor(); });
+    const br = el("select");
+    ALLOWED_BITRATES.forEach(b=>br.append(el("option",{value:b},b)));
+    br.value=ch.bitrate; br.addEventListener("change",e=>ch.bitrate=e.target.value);
+    const del = el("button",{class:"danger", onclick:()=>{editor.splice(i,1);renderEditor();}},"✕");
+    body.append(el("tr",{},
+      el("td",{},fsel),
+      el("td",{}, el("div",{class:"chk"},stereo)),
+      el("td",{}, el("div",{class:"chk"},rds)),
+      el("td",{}, el("div",{class:"chk"},prim)),
+      el("td",{},br),
+      el("td",{},del)));
+  });
+  $("#addBtn").disabled = editor.length>=MAXCH;
+  if(editor.length && !editor.some(c=>c.primary)) editor[0].primary=true;
+}
+
+function addChannel(){
+  if(editor.length>=MAXCH) return;
+  const inWin = stationList.filter(s=>s.in_window);
+  const f = inWin.length ? inWin[0].freq : WINDOW.lo;
+  editor.push({freq:Number(f.toFixed?f.toFixed(1):f), stereo:true, rds:false,
+               primary:editor.length===0, bitrate:"192k"});
+  renderEditor();
+}
+
+async function saveChannels(){
+  $("#saveErr").textContent="";
+  const r = await jpost("/api/mux/channels", {channels:editor});
+  if(!r.ok){ $("#saveErr").textContent = r.error||"save failed"; return; }
+  editor = r.channels;
+  renderEditor();
+}
+
+// ---- live status + mount cards ----
+function renderCards(status){
+  const chans = (status.status?.channels)||[];
+  const wrap = $("#cards");
+  if(!chans.length){ wrap.innerHTML=""; wrap.append(el("div",{class:"muted"},"Not streaming.")); players={}; return; }
+  const want = new Set(chans.map(c=>c.mount));
+  // remove stale cards
+  [...wrap.querySelectorAll("[data-mount]")].forEach(n=>{ if(!want.has(n.dataset.mount)){ n.remove(); delete players[n.dataset.mount]; }});
+  const placeholder = wrap.querySelector(".muted"); if(placeholder) placeholder.remove();
+  chans.forEach(c=>{
+    let card = wrap.querySelector(`[data-mount="${c.mount}"]`);
+    if(!card){
+      card = el("div",{class:"card","data-mount":c.mount});
+      const title = el("div",{},
+        el("span",{class:"freq"}, c.freq.toFixed(1)),
+        el("span",{class: c.stereo?"badge":"badge mono"}, c.stereo?"STEREO":"MONO"),
+        c.rds?el("span",{class:"badge"},"RDS"):document.createTextNode(""),
+        c.primary?el("span",{class:"badge"},"PRIMARY"):document.createTextNode(""));
+      const np = el("div",{class:"np", id:`np-${c.mount}`}, "");
+      const live = el("div",{class:"muted", id:`live-${c.mount}`}, "");
+      const audio = el("audio",{controls:"", preload:"none", src:`${STREAM_BASE}/${c.mount}`});
+      card.append(title, np, audio, live);
+      wrap.append(card);
+      players[c.mount]=true;
+    }
+    const live = $(`#live-${c.mount}`);
+    if(live) live.textContent = c.alive ? "● live" : "○ down";
+    if(live) live.style.color = c.alive ? "var(--good)" : "var(--bad)";
+  });
+}
+
+async function pollNowPlaying(){
+  for(const mount of Object.keys(players)){
+    try {
+      const d = await jget(`/api/now_playing?mount=${encodeURIComponent(mount)}`);
+      const rds = d.rds||{};
+      const node = $(`#np-${mount}`); if(!node) continue;
+      const ps = rds.ps||"", artist=rds.artist||"", title=rds.title||"", rt=rds.rt||"";
+      node.textContent = (artist&&title)?`${artist} — ${title}` : (ps||rt||"—");
+    } catch(e){}
+  }
+}
+
+async function refreshStatus(){
+  let s;
+  try { s = await jget("/api/mux/status"); } catch(e){ return; }
+  WINDOW = s.window; MAXCH = s.max_channels; $("#maxCh").textContent=MAXCH;
+  $("#winNote").textContent = `(window ${WINDOW.lo}–${WINDOW.hi} MHz)`;
+  const muxOn = s.mux_active==="active", capOn = s.capture_active==="active";
+  $("#muxPill").className = "pill "+(muxOn?"on":"off"); $("#muxPill").textContent = muxOn?"active":s.mux_active;
+  $("#capPill").className = "pill "+(capOn?"on":"off"); $("#capPill").textContent = capOn?"active":s.capture_active;
+  const cap = s.capture||{};
+  $("#adcMeter").textContent = capOn && cap.adc_peak_pct!=null
+    ? `ADC ${cap.adc_peak_pct}% · drops ${cap.drops??0} · ovf ${cap.overflows??0}` : "";
+  $("#startBtn").disabled = muxOn;
+  $("#stopBtn").disabled = !muxOn && !capOn;
+  $("#modeNote").textContent = muxOn ? "Multistation live — legacy mono is down."
+    : "Legacy mono (/fm.mp3) is the active path. Starting multistation takes the device.";
+  renderCards(s);
+}
+
+// init
+(async ()=>{
+  const s = await jget("/api/mux/status"); WINDOW=s.window; MAXCH=s.max_channels;
+  await loadStations();
+  const cfg = await jget("/api/mux/channels");
+  editor = (cfg.channels||[]).map(c=>({freq:c.freq, stereo:!!c.stereo, rds:!!c.rds,
+            primary:!!c.primary, bitrate:c.bitrate||"192k"}));
+  if(!editor.length) addChannel();
+  renderEditor();
+  $("#addBtn").addEventListener("click", addChannel);
+  $("#saveBtn").addEventListener("click", saveChannels);
+  $("#startBtn").addEventListener("click", async ()=>{ $("#startBtn").disabled=true;
+    const r=await jpost("/api/mux/start"); if(!r.ok) $("#modeNote").textContent="start failed: "+(r.error||""); });
+  $("#stopBtn").addEventListener("click", async ()=>{ $("#stopBtn").disabled=true;
+    await jpost("/api/mux/stop"); });
+  refreshStatus();
+  setInterval(refreshStatus, 2000);
+  setInterval(pollNowPlaying, 2000);
+})();
+</script>
+</body>
+</html>

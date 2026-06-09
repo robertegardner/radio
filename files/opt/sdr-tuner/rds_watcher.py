@@ -4,7 +4,10 @@
 import json, os, re, sys, time
 from pathlib import Path
 
-OUT = Path("/run/sdr-streams/now_playing.json")
+# Output path is configurable so the multistation mux can run one watcher per
+# channel: the primary writes the legacy now_playing.json (existing UI/captions),
+# others write now_playing-<mount>.json. Defaults to the legacy path.
+OUT = Path(os.environ.get("NOW_PLAYING_PATH", "/run/sdr-streams/now_playing.json"))
 OUT.parent.mkdir(parents=True, exist_ok=True)
 
 state = {

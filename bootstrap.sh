@@ -87,6 +87,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 3c. Build csdr from source (FM-multistation per-channel DSP front end)
+# ---------------------------------------------------------------------------
+# csdr (ha7ilm/csdr) runs the wideband shift/decimate/fmdemod chain in C/SIMD;
+# a real-time 8 Msps mix in Python would never hold. Trixie has no csdr package.
+# The upstream Makefile auto-detects 32-bit ARMv7 NEON flags (-march=armv7-a
+# -mfpu=neon), which DO NOT compile on aarch64 — so we override PARAMS_SIMD with
+# armv8 flags (NEON/Advanced-SIMD is always present on aarch64) and skip the
+# 32-bit NEON intrinsics. Install to /usr/local (ldconfig picks up the lib).
+# HARD DEPENDENCY: if this build fails, FM-multistation mode cannot run.
+if ! command -v csdr >/dev/null; then
+  echo "[3c] Building csdr (FM-multistation DSP)..."
+  TMP=$(mktemp -d)
+  git clone --depth 1 https://github.com/ha7ilm/csdr.git "$TMP/csdr"
+  (
+    cd "$TMP/csdr"
+    make csdr PARAMS_SIMD="-march=armv8-a+simd -funsafe-math-optimizations -Wformat=0"
+    install -m 0755 libcsdr.so.0.15 /usr/local/lib/
+    ln -sf libcsdr.so.0.15 /usr/local/lib/libcsdr.so
+    install -m 0755 csdr /usr/local/bin/
+  )
+  ldconfig
+  rm -rf "$TMP"
+  command -v csdr >/dev/null || { echo "csdr build FAILED — FM-multistation mode unavailable" >&2; exit 1; }
+else
+  echo "[3c] csdr already installed at $(which csdr), skipping build."
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Create radio user + directories
 # ---------------------------------------------------------------------------
 echo "[4/9] Setting up radio user and directories..."
@@ -110,13 +138,17 @@ install -d -m 0775 -o root  -g radio /etc/sdr-streams
 echo "[5/9] Installing application files..."
 for f in stream.sh hd_stream.py rds_watcher.py fm_scan.py am_scan.py app.py \
          caption_orchestrator.py station_db.py fcc_fetch.py ui_settings.py \
-         wxsat_predict.py wxsat_scheduler.py; do
+         wxsat_predict.py wxsat_scheduler.py \
+         iq_capture.py stereo_decode.py channel_pipeline.sh; do
   install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/$f" "/opt/sdr-tuner/$f"
 done
 # wxsat_capture.sh ships with Phase 2 (real capture); install if present.
 [[ -f "$SRC/opt/sdr-tuner/wxsat_capture.sh" ]] && \
   install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_capture.sh" /opt/sdr-tuner/wxsat_capture.sh
-for t in index.html radio.html wxsat.html; do
+# mux_supervisor.py ships with FM-multistation Phase 2; install if present.
+[[ -f "$SRC/opt/sdr-tuner/mux_supervisor.py" ]] && \
+  install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/mux_supervisor.py" /opt/sdr-tuner/mux_supervisor.py
+for t in index.html radio.html wxsat.html multi.html; do
   install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/$t" "/opt/sdr-tuner/templates/$t"
 done
 
@@ -150,6 +182,21 @@ fi
 install -m 0640 -o root -g radio "$SRC/etc/sdr-streams/wxsat.env.example" /etc/sdr-streams/wxsat.env.example
 if [[ ! -f /etc/sdr-streams/wxsat.env ]]; then
   install -m 0640 -o root -g radio "$SRC/etc/sdr-streams/wxsat.env.example" /etc/sdr-streams/wxsat.env
+fi
+
+# mux.env (FM-multistation mode) — read-only at runtime. radio reads it via the
+# sdr-iq-capture unit's EnvironmentFile and channel_pipeline.sh.
+install -m 0640 -o root -g radio "$SRC/etc/sdr-streams/mux.env.example" /etc/sdr-streams/mux.env.example
+if [[ ! -f /etc/sdr-streams/mux.env ]]; then
+  install -m 0640 -o root -g radio "$SRC/etc/sdr-streams/mux.env.example" /etc/sdr-streams/mux.env
+fi
+
+# channels.json (FM-multistation channel set) — Flask writes it, so radio-owned 0660.
+install -m 0664 -o root -g radio "$SRC/etc/sdr-streams/channels.json.example" /etc/sdr-streams/channels.json.example
+if [[ ! -f /etc/sdr-streams/channels.json ]]; then
+  echo '{"channels": []}' > /etc/sdr-streams/channels.json
+  chown radio:radio /etc/sdr-streams/channels.json
+  chmod 0660 /etc/sdr-streams/channels.json
 fi
 
 # ---------------------------------------------------------------------------
@@ -188,9 +235,13 @@ fi
 # ---------------------------------------------------------------------------
 echo "[7/9] Installing systemd units and sudoers..."
 for unit in sdr-fm@.service sdr-tuner.service sdr-scan.service \
-            sdr-am-scan.service sdr-captions.service wxsat-scheduler.service; do
+            sdr-am-scan.service sdr-captions.service wxsat-scheduler.service \
+            sdr-iq-capture.service; do
   install -m 0644 -o root -g root "$SRC/etc/systemd/system/$unit" "/etc/systemd/system/$unit"
 done
+# sdr-mux.service ships with FM-multistation Phase 2; install if present.
+[[ -f "$SRC/etc/systemd/system/sdr-mux.service" ]] && \
+  install -m 0644 -o root -g root "$SRC/etc/systemd/system/sdr-mux.service" /etc/systemd/system/sdr-mux.service
 
 install -m 0440 -o root -g root "$SRC/etc/sudoers.d/sdr-tuner" /etc/sudoers.d/sdr-tuner
 visudo -cf /etc/sudoers.d/sdr-tuner

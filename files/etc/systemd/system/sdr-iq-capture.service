@@ -1,0 +1,24 @@
+[Unit]
+Description=SDR wideband IQ capture + fanout (FM-multistation mode)
+After=network-online.target icecast2.service
+Wants=network-online.target
+# The dx-R2 opens for exactly one process. Starting capture stops the legacy
+# mono stream; rollback is `systemctl stop sdr-iq-capture && start sdr-fm@active`.
+Conflicts=sdr-fm@active.service
+
+[Service]
+Type=simple
+User=radio
+EnvironmentFile=/etc/sdr-streams/mux.env
+RuntimeDirectory=sdr-streams
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/sdr-tuner/iq_capture.py
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

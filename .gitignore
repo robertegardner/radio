@@ -19,10 +19,14 @@ venv/
 **/stations.json
 **/stations_am.json
 **/now_playing.json
+**/now_playing-*.json
 **/captions.json
 **/active.env
 **/tuner.env
 **/captions.env
+**/mux.env
+**/channels.json
+**/mux_status.json
 **/overrides.json
 **/ui.json
 **/.token

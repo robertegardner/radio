@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -39,6 +40,18 @@ SERVICE          = "sdr-fm@active"
 SCAN_FM_SERVICE  = "sdr-scan.service"
 SCAN_AM_SERVICE  = "sdr-am-scan.service"
 ICECAST_PASS     = os.environ.get("ICECAST_PASS", "changeme")
+
+# FM-multistation (mux) mode. Opt-in; legacy mono (SERVICE) stays the boot
+# default. The mux owns mux_status.json; Flask writes channels.json and signals.
+MUX_ENV_PATH       = Path("/etc/sdr-streams/mux.env")
+CHANNELS_PATH      = Path("/etc/sdr-streams/channels.json")
+MUX_STATUS_PATH    = Path("/run/sdr-streams/mux_status.json")
+IQ_STATUS_PATH     = Path("/run/sdr-streams/iq_capture.json")
+MUX_SERVICE        = "sdr-mux"
+IQ_CAPTURE_SERVICE = "sdr-iq-capture"
+# Clean ceiling on this Pi 5 alongside the scanner (3 channels = 0 drops; the 4th
+# glitches). Keep in sync with mux_supervisor.MAX_CHANNELS.
+MAX_MUX_CHANNELS   = 3
 
 # MP3 stream bitrates the user may pick from the radio UI. The value lands
 # in active.env (BITRATE=) and is passed straight to ffmpeg, so it must be
@@ -232,6 +245,17 @@ def wxsat():
     )
 
 
+@app.route("/multi")
+def multi():
+    """FM-multistation control + multi-mount listening UI."""
+    settings = ui_settings.load()
+    return render_template(
+        "multi.html",
+        stream_base=ui_settings.stream_url_for(request.host).rsplit("/", 1)[0],
+        site_title=settings["site_title"],
+    )
+
+
 @app.route("/tune", methods=["POST"])
 def tune():
     freq = request.form["freq"]
@@ -358,7 +382,17 @@ def api_rfi_status():
 
 @app.route("/api/now_playing")
 def api_now_playing():
-    rds      = _load_json(NOW_PLAYING_PATH) or {}
+    # Per-mount RDS for multistation mode: ?mount=m95_7.mp3 reads
+    # now_playing-m95_7.json; the primary (fm.mp3) and the no-arg case use the
+    # legacy now_playing.json. Captions/station_db below track active.env and are
+    # only meaningful for the legacy mono tune (harmless otherwise).
+    mount = request.args.get("mount")
+    if mount and mount != "fm.mp3":
+        base = mount[:-4] if mount.endswith(".mp3") else mount
+        np_path = Path(f"/run/sdr-streams/now_playing-{base}.json")
+    else:
+        np_path = NOW_PLAYING_PATH
+    rds      = _load_json(np_path)           or {}
     cap      = _load_json(CAPTIONS_PATH)    or {}
     hd_state = _load_json(HD_STATUS_PATH)   or {}
 
@@ -463,6 +497,121 @@ def api_bitrate():
         sysctl("restart")
         restarted = True
     return jsonify({"ok": True, "bitrate": br, "restarted": restarted})
+
+
+# ---------------------------------------------------------------------------
+# FM-multistation (mux) APIs
+#   Mux mode is opt-in and mutually exclusive with the legacy mono stream, AM,
+#   and wxsat (one device). Flask only writes channels.json and signals the mux;
+#   it never touches the SDR. start/stop are admin controls (NPMplus auth).
+# ---------------------------------------------------------------------------
+def mux_window() -> tuple:
+    """(lo, hi) MHz advertised tuning window, from mux.env."""
+    lo, hi = 95.0, 101.0
+    try:
+        for line in MUX_ENV_PATH.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("WINDOW_LO_MHZ="):
+                lo = float(line.split("=", 1)[1].strip().strip('"'))
+            elif line.startswith("WINDOW_HI_MHZ="):
+                hi = float(line.split("=", 1)[1].strip().strip('"'))
+    except (OSError, ValueError):
+        pass
+    return lo, hi
+
+
+def mux_reload_signal() -> bool:
+    """SIGHUP the running mux so it reloads channels.json. Same user (radio),
+    so no sudo needed — the pid comes from mux_status.json."""
+    doc = _load_json(MUX_STATUS_PATH) or {}
+    pid = doc.get("pid")
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), signal.SIGHUP)
+        return True
+    except (ProcessLookupError, PermissionError, ValueError):
+        return False
+
+
+@app.route("/api/mux/status")
+def api_mux_status():
+    lo, hi = mux_window()
+    status = _load_json(MUX_STATUS_PATH) or {}
+    iq = _load_json(IQ_STATUS_PATH) or {}
+    return jsonify({
+        "mux_active":     is_active(MUX_SERVICE),
+        "capture_active": is_active(IQ_CAPTURE_SERVICE),
+        "window":         {"lo": lo, "hi": hi},
+        "max_channels":   MAX_MUX_CHANNELS,
+        "status":         status,
+        "capture":        iq,
+    })
+
+
+@app.route("/api/mux/channels", methods=["GET", "POST"])
+def api_mux_channels():
+    if request.method == "GET":
+        return jsonify(_load_json(CHANNELS_PATH) or {"channels": []})
+
+    payload = request.get_json(silent=True) or {}
+    chans = payload.get("channels")
+    if not isinstance(chans, list):
+        return jsonify({"ok": False, "error": "channels must be a list"}), 400
+    if len(chans) > MAX_MUX_CHANNELS:
+        return jsonify({"ok": False,
+                        "error": f"at most {MAX_MUX_CHANNELS} channels"}), 400
+    lo, hi = mux_window()
+    clean, primaries = [], 0
+    for ch in chans:
+        try:
+            freq = round(float(ch.get("freq")), 1)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": f"bad freq {ch.get('freq')!r}"}), 400
+        if not (lo <= freq <= hi):
+            return jsonify({"ok": False,
+                            "error": f"{freq} outside window {lo}-{hi}"}), 400
+        br = str(ch.get("bitrate", "192k"))
+        if br not in ALLOWED_BITRATES:
+            return jsonify({"ok": False, "error": f"invalid bitrate {br!r}"}), 400
+        primary = bool(ch.get("primary"))
+        primaries += int(primary)
+        clean.append({"freq": freq, "stereo": bool(ch.get("stereo", True)),
+                      "rds": bool(ch.get("rds", False)), "primary": primary,
+                      "bitrate": br})
+    if primaries > 1:
+        return jsonify({"ok": False, "error": "only one channel may be primary"}), 400
+    if clean and primaries == 0:
+        clean[0]["primary"] = True  # ensure /fm.mp3 + now_playing.json exist
+    try:
+        CHANNELS_PATH.write_text(json.dumps({"channels": clean}, indent=2))
+    except OSError as e:
+        app.logger.error("api_mux_channels write failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    reloaded = mux_reload_signal() if is_active(MUX_SERVICE) == "active" else False
+    return jsonify({"ok": True, "channels": clean, "reloaded": reloaded})
+
+
+@app.route("/api/mux/start", methods=["POST"])
+def api_mux_start():
+    """Engage FM-multistation mode. Starting sdr-mux pulls in sdr-iq-capture
+    (Requires=) which Conflicts=sdr-fm@active, so legacy mono stops automatically."""
+    r = sysctl("start", MUX_SERVICE)
+    if r.returncode != 0:
+        return jsonify({"ok": False, "error": r.stderr.strip() or "start failed"}), 500
+    return jsonify({"ok": True, "mux_active": is_active(MUX_SERVICE)})
+
+
+@app.route("/api/mux/stop", methods=["POST"])
+def api_mux_stop():
+    """Disengage mux mode and roll back to known-good legacy mono."""
+    sysctl("stop", MUX_SERVICE)
+    sysctl("stop", IQ_CAPTURE_SERVICE)
+    clear_runtime_state()
+    r = sysctl("start", SERVICE)
+    if r.returncode != 0:
+        return jsonify({"ok": False, "error": r.stderr.strip() or "mono restart failed"}), 500
+    return jsonify({"ok": True, "mono_active": is_active(SERVICE)})
 
 
 # ---------------------------------------------------------------------------
