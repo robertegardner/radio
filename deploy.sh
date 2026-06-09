@@ -29,12 +29,27 @@ install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_scheduler.py"     /o
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_live.py"          /opt/sdr-tuner/wxsat_live.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_rebuild.py"       /opt/sdr-tuner/wxsat_rebuild.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_cn_check.py"      /opt/sdr-tuner/wxsat_cn_check.py
+install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/iq_capture.py"          /opt/sdr-tuner/iq_capture.py
+install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/stereo_decode.py"       /opt/sdr-tuner/stereo_decode.py
+install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/channel_pipeline.sh"    /opt/sdr-tuner/channel_pipeline.sh
+# mux_supervisor.py ships with FM-multistation Phase 2; install only if present.
+[[ -f "$SRC/opt/sdr-tuner/mux_supervisor.py" ]] && \
+  install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/mux_supervisor.py"    /opt/sdr-tuner/mux_supervisor.py
 # wxsat_capture.sh ships in Phase 2 (real capture); install only if present.
 [[ -f "$SRC/opt/sdr-tuner/wxsat_capture.sh" ]] && \
   install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_capture.sh"     /opt/sdr-tuner/wxsat_capture.sh
 install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/radio.html"   /opt/sdr-tuner/templates/radio.html
 install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/index.html"   /opt/sdr-tuner/templates/index.html
 install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/wxsat.html"   /opt/sdr-tuner/templates/wxsat.html
+
+# FM-multistation units (opt-in; NOT started here — legacy mono stays default).
+install -m 0644 -o root -g root "$SRC/etc/systemd/system/sdr-iq-capture.service" /etc/systemd/system/sdr-iq-capture.service
+[[ -f "$SRC/etc/systemd/system/sdr-mux.service" ]] && \
+  install -m 0644 -o root -g root "$SRC/etc/systemd/system/sdr-mux.service" /etc/systemd/system/sdr-mux.service
+# sudoers may have gained new verbs (sdr-iq-capture / sdr-mux).
+install -m 0440 -o root -g root "$SRC/etc/sudoers.d/sdr-tuner" /etc/sudoers.d/sdr-tuner
+visudo -cf /etc/sudoers.d/sdr-tuner
+systemctl daemon-reload
 
 echo "Restarting services..."
 systemctl restart sdr-tuner.service

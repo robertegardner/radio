@@ -7,3 +7,10 @@ radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-fm@active
 radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-scan.service
 radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-am-scan.service
 radio ALL=(root) NOPASSWD: /usr/bin/systemctl restart sdr-captions
+# FM-multistation mode (iq_capture + mux). Mutually exclusive with sdr-fm@active.
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-iq-capture
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl stop    sdr-iq-capture
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl restart sdr-iq-capture
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-mux
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl stop    sdr-mux
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl restart sdr-mux
