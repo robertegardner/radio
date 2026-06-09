@@ -2,13 +2,15 @@
 """SDR Tuner Flask UI."""
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
+from flask import (Flask, Response, jsonify, redirect, render_template, request,
+                   send_from_directory, url_for)
 
 import station_db
 import ui_settings
@@ -23,6 +25,15 @@ NOW_PLAYING_PATH = Path("/run/sdr-streams/now_playing.json")
 CAPTIONS_PATH    = Path("/run/sdr-streams/captions.json")
 HD_STATUS_PATH   = Path("/run/sdr-streams/hd_status.json")
 RFI_STATUS_PATH  = Path("/run/sdr-streams/rfi_status.json")
+
+# Weather-satellite (wxsat) state. Persistent products + captures index live in
+# WXSAT_DIR; the upcoming-pass list is regenerated into tmpfs.
+WXSAT_DIR          = Path("/var/lib/sdr-streams/wxsat")
+WXSAT_CAPTURES_PATH = WXSAT_DIR / "captures.json"
+WXSAT_PASSES_PATH   = Path("/run/sdr-streams/wxsat_passes.json")
+WXSAT_STATUS_PATH   = Path("/run/sdr-streams/wxsat_status.json")
+WXSAT_AUTH_PATH     = Path("/run/sdr-streams/wxsat_authorized.json")
+WXSAT_LIVE_PATH     = Path("/run/sdr-streams/wxsat_live.json")
 
 SERVICE          = "sdr-fm@active"
 SCAN_FM_SERVICE  = "sdr-scan.service"
@@ -207,6 +218,16 @@ def radio():
     return render_template(
         "radio.html",
         stream_url=ui_settings.stream_url_for(request.host),
+        site_title=settings["site_title"],
+    )
+
+
+@app.route("/wxsat")
+def wxsat():
+    """Weather-satellite (Meteor-M LRPT) capture gallery + schedule."""
+    settings = ui_settings.load()
+    return render_template(
+        "wxsat.html",
         site_title=settings["site_title"],
     )
 
@@ -442,6 +463,266 @@ def api_bitrate():
         sysctl("restart")
         restarted = True
     return jsonify({"ok": True, "bitrate": br, "restarted": restarted})
+
+
+# ---------------------------------------------------------------------------
+# Weather-satellite (wxsat) APIs
+#   GETs are public-safe like /radio. The delete POST mutates and is grouped
+#   with the admin routes for NPMplus auth (see CLAUDE.md).
+# ---------------------------------------------------------------------------
+def _wxsat_captures():
+    data = _load_json(WXSAT_CAPTURES_PATH)
+    if not data:
+        return []
+    return data.get("captures", []) if isinstance(data, dict) else []
+
+
+def _pass_snapshot_path(outdir):
+    """Path to a capture's reviewable pass-panel snapshot, or None if the outdir
+    is missing/unsafe. Our outdirs are single timestamp components."""
+    outdir = str(outdir or "")
+    if not outdir or "/" in outdir or ".." in outdir:
+        return None
+    return WXSAT_DIR / outdir / "pass.json"
+
+
+@app.route("/api/wxsat/captures")
+def api_wxsat_captures():
+    caps = sorted(_wxsat_captures(), key=lambda c: c.get("aos_unix", 0), reverse=True)
+    try:
+        recent = int(request.args.get("recent", "0"))
+    except ValueError:
+        recent = 0
+    if recent > 0:
+        caps = caps[:recent]
+    # Flag which captures have a replayable panel on disk ("Pass view"), and
+    # which still have a retained baseband.cs16 that can be rebuilt from
+    # ("Rebuild from IQ").
+    for c in caps:
+        snap = _pass_snapshot_path(c.get("outdir"))
+        c["has_panel"] = bool(snap and snap.exists())
+        iq = snap.with_name("baseband.cs16") if snap else None
+        c["has_iq"] = bool(iq and iq.exists())
+    return jsonify({"captures": caps})
+
+
+@app.route("/api/wxsat/passes")
+def api_wxsat_passes():
+    data = _load_json(WXSAT_PASSES_PATH)
+    if not data:
+        return jsonify({"passes": [], "generated_at": None})
+    return jsonify(data)
+
+
+def _wxsat_human_listeners():
+    """(count, ok) human listeners on the fm.mp3 mount, discounting the caption
+    orchestrator (itself an Icecast consumer). ok=False if the query failed."""
+    try:
+        r = requests.get("http://localhost:8000/status-json.xsl", timeout=4)
+        r.raise_for_status()
+        src = r.json().get("icestats", {}).get("source")
+        raw = 0
+        if src is not None:
+            for s in (src if isinstance(src, list) else [src]):
+                url = str(s.get("listenurl", ""))
+                if url.endswith("/fm.mp3") or url.endswith("fm.mp3"):
+                    try:
+                        raw = int(s.get("listeners", 0) or 0)
+                    except (TypeError, ValueError):
+                        raw = 0
+                    break
+        internal = 1 if is_active("sdr-captions") == "active" else 0
+        return max(0, raw - internal), True
+    except (requests.RequestException, ValueError) as e:
+        app.logger.warning("wxsat listener check failed: %s", e)
+        return 0, False
+
+
+@app.route("/api/wxsat/status")
+def api_wxsat_status():
+    """Current tuner status + next scheduled pass + authorization + live listener
+    count, for the /wxsat indicator and the /radio next-interruption notice."""
+    st       = _load_json(WXSAT_STATUS_PATH) or {}
+    passes   = (_load_json(WXSAT_PASSES_PATH) or {}).get("passes", [])
+    auth     = _load_json(WXSAT_AUTH_PATH) or {}
+    sched    = st.get("state")                       # scheduled | capturing | idle
+    streaming = is_active(SERVICE) == "active"
+    next_pass = st.get("next_pass") or (passes[0] if passes else None)
+
+    # The capture script restarts the stream BEFORE the (offline) decode, so a
+    # "capturing" scheduler state with the stream back up means we're decoding.
+    if sched == "capturing":
+        tuner = "capturing" if not streaming else "decoding"
+    elif streaming:
+        tuner = "streaming"
+    else:
+        tuner = "idle"
+
+    authorized_aos = auth.get("aos_unix")
+    next_authorized = bool(
+        authorized_aos and next_pass
+        and abs(int(authorized_aos) - int(next_pass.get("aos_unix", 0))) <= 120)
+    listeners, listeners_ok = _wxsat_human_listeners()
+
+    return jsonify({
+        "tuner":           tuner,           # streaming | capturing | decoding | idle
+        "stream_active":   streaming,
+        "state":           sched,
+        "dry_run":         st.get("dry_run", False),
+        "next_pass":       next_pass,
+        "capturing_pass":  st.get("capturing_pass"),
+        "authorized_aos":  authorized_aos,
+        "next_authorized": next_authorized,
+        "listeners":       listeners,
+        "listeners_ok":    listeners_ok,
+    })
+
+
+@app.route("/api/wxsat/live")
+def api_wxsat_live():
+    """Live per-pass telemetry written by wxsat_live.py during a capture
+    (spectrum + level while recording, decode progress/SNR while decoding).
+    Public-safe read. Returns {live:false} when idle or the frame is stale."""
+    data = _load_json(WXSAT_LIVE_PATH)
+    if not data or (time.time() - data.get("updated", 0)) > 8:
+        return jsonify({"live": False})
+    data["live"] = True
+    return jsonify(data)
+
+
+@app.route("/api/wxsat/pass/<cid>")
+def api_wxsat_pass(cid):
+    """Replayable pass-panel snapshot (waterfall + sky track + decode summary)
+    saved by wxsat_live.py, for reviewing a pass after the live view is gone.
+    Public-safe read. {available:false} if the pass has no saved panel."""
+    rec = next((c for c in _wxsat_captures() if c.get("id") == cid), None)
+    snap = _pass_snapshot_path(rec.get("outdir")) if rec else None
+    data = _load_json(snap) if snap else None
+    if not data:
+        return jsonify({"available": False})
+    data["available"] = True
+    return jsonify(data)
+
+
+@app.route("/api/wxsat/rebuild", methods=["POST"])
+def api_wxsat_rebuild():
+    """Reconstruct a pass panel offline from a retained baseband.cs16 (for a pass
+    whose live panel was missed). Spawns wxsat_rebuild.py detached so the request
+    returns immediately; the gallery picks up has_panel on its next refresh.
+    Mutating/expensive — gate behind admin auth like the delete route."""
+    payload = request.get_json(silent=True) or {}
+    cid = str(payload.get("id", "")).strip()
+    rec = next((c for c in _wxsat_captures() if c.get("id") == cid), None)
+    if not rec:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    snap = _pass_snapshot_path(rec.get("outdir"))
+    if not snap or not snap.with_name("baseband.cs16").exists():
+        return jsonify({"ok": False, "error": "no retained IQ for this pass"}), 400
+    try:
+        subprocess.Popen(
+            ["/usr/bin/python3", "/opt/sdr-tuner/wxsat_rebuild.py", cid],
+            cwd="/opt/sdr-tuner",
+            env=dict(os.environ, HOME="/var/lib/sdr-streams/wxsat"),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "started": True})
+
+
+@app.route("/api/wxsat/authorize", methods=["POST"])
+def api_wxsat_authorize():
+    """Listener pre-approval: capture the given pass even if someone's listening.
+    A control action like /api/tune (not a public read). Body: {aos_unix} to set,
+    {cancel:true} to clear."""
+    payload = request.get_json(silent=True) or {}
+    if payload.get("cancel"):
+        try:
+            WXSAT_AUTH_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": True, "authorized_aos": None})
+    try:
+        aos = int(payload.get("aos_unix"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "missing/invalid aos_unix"}), 400
+    now = time.time()
+    if aos < now - 300 or aos > now + 7 * 86400:
+        return jsonify({"ok": False, "error": "aos_unix out of range"}), 400
+    try:
+        WXSAT_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = WXSAT_AUTH_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"aos_unix": aos, "at": int(now)}))
+        os.replace(tmp, WXSAT_AUTH_PATH)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "authorized_aos": aos})
+
+
+@app.route("/api/wxsat/space")
+def api_wxsat_space():
+    # Report free space on the filesystem holding the captures.
+    for p in (WXSAT_DIR, WXSAT_DIR.parent, Path("/")):
+        try:
+            u = shutil.disk_usage(p)
+            return jsonify({
+                "total": u.total, "used": u.used, "free": u.free,
+                "pct_used": round(u.used / u.total * 100, 1) if u.total else None,
+            })
+        except OSError:
+            continue
+    return jsonify({"total": None, "used": None, "free": None, "pct_used": None})
+
+
+@app.route("/api/wxsat/image/<path:relpath>")
+def api_wxsat_image(relpath):
+    # send_from_directory rejects traversal (../) and absolute escapes.
+    resp = send_from_directory(WXSAT_DIR, relpath)
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
+@app.route("/api/wxsat/delete", methods=["POST"])
+def api_wxsat_delete():
+    """Delete a capture (its product dir, if any) and drop it from the index.
+    Mutating route — protect via NPMplus auth alongside the other admin routes."""
+    payload = request.get_json(silent=True) or {}
+    cid = str(payload.get("id", "")).strip()
+    if not cid:
+        return jsonify({"ok": False, "error": "missing id"}), 400
+    caps = _wxsat_captures()
+    rec = next((c for c in caps if c.get("id") == cid), None)
+    if rec is None:
+        return jsonify({"ok": False, "error": "not found"}), 404
+
+    # Remove the product directory (first path component of the image), guarding
+    # strictly against escaping WXSAT_DIR.
+    img = rec.get("image") or rec.get("thumb")
+    if img:
+        top = str(img).split("/", 1)[0]
+        target = (WXSAT_DIR / top).resolve()
+        try:
+            base = WXSAT_DIR.resolve()
+            if target == base or base not in target.parents:
+                raise ValueError("refusing to delete outside wxsat dir")
+            if target.is_dir():
+                shutil.rmtree(target)
+        except (OSError, ValueError) as e:
+            app.logger.error("wxsat delete %s: %s", cid, e)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    remaining = [c for c in caps if c.get("id") != cid]
+    try:
+        WXSAT_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = WXSAT_CAPTURES_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"captures": remaining}))
+        os.replace(tmp, WXSAT_CAPTURES_PATH)
+    except OSError as e:
+        app.logger.error("wxsat delete index rewrite %s: %s", cid, e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "id": cid})
 
 
 # ---------------------------------------------------------------------------

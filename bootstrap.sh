@@ -41,7 +41,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   meson ninja-build pkg-config \
   libsndfile1-dev libliquid-dev nlohmann-json3-dev \
   libchromaprint-tools \
-  jq curl
+  jq curl \
+  satdump python3-pyorbital
 
 # ---------------------------------------------------------------------------
 # 2. (Skipped: DVB driver blacklist was needed for RTL-SDR, not SDRplay)
@@ -108,10 +109,14 @@ install -d -m 0775 -o root  -g radio /etc/sdr-streams
 # ---------------------------------------------------------------------------
 echo "[5/9] Installing application files..."
 for f in stream.sh hd_stream.py rds_watcher.py fm_scan.py am_scan.py app.py \
-         caption_orchestrator.py station_db.py fcc_fetch.py ui_settings.py; do
+         caption_orchestrator.py station_db.py fcc_fetch.py ui_settings.py \
+         wxsat_predict.py wxsat_scheduler.py; do
   install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/$f" "/opt/sdr-tuner/$f"
 done
-for t in index.html radio.html; do
+# wxsat_capture.sh ships with Phase 2 (real capture); install if present.
+[[ -f "$SRC/opt/sdr-tuner/wxsat_capture.sh" ]] && \
+  install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_capture.sh" /opt/sdr-tuner/wxsat_capture.sh
+for t in index.html radio.html wxsat.html; do
   install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/$t" "/opt/sdr-tuner/templates/$t"
 done
 
@@ -141,12 +146,49 @@ if [[ ! -f /etc/sdr-streams/overrides.json ]]; then
   chmod 0664 /etc/sdr-streams/overrides.json
 fi
 
+# wxsat.env (weather-satellite scheduler) — read-only at runtime
+install -m 0640 -o root -g radio "$SRC/etc/sdr-streams/wxsat.env.example" /etc/sdr-streams/wxsat.env.example
+if [[ ! -f /etc/sdr-streams/wxsat.env ]]; then
+  install -m 0640 -o root -g radio "$SRC/etc/sdr-streams/wxsat.env.example" /etc/sdr-streams/wxsat.env
+fi
+
+# ---------------------------------------------------------------------------
+# 6b. Weather-satellite (wxsat) state dirs + SatDump TLE workaround
+# ---------------------------------------------------------------------------
+echo "[6b] Weather-satellite (wxsat) setup..."
+# Persistent products + TLE cache, and a private SatDump HOME (the scheduler
+# unit sets HOME here) so SatDump never writes to the radio user's home.
+install -d -m 0755 -o radio -g radio /var/lib/sdr-streams/wxsat
+install -d -m 0755 -o radio -g radio /var/lib/sdr-streams/wxsat/tle
+install -d -m 0755 -o radio -g radio /var/lib/sdr-streams/wxsat/.config/satdump
+
+# SatDump auto-fetches TLEs from a HARDCODED celestrak.org URL at launch, and
+# celestrak is unreachable from this Pi (verified Phase 0) — without this it
+# blocks ~133 s per connect and retries forever, never decoding. Pointing
+# celestrak at localhost makes the connect fail in milliseconds; SatDump then
+# gives up after a few retries (~5 s) and proceeds to decode. We supply real
+# TLEs ourselves (wxsat_predict.py / the capture script seeds satdump_tles.txt).
+#
+# IMPORTANT: this Pi's /etc/hosts is managed by cloud-init (manage_etc_hosts:
+# True) and is REGENERATED from a template on every boot — appending to
+# /etc/hosts alone is wiped at the next reboot (the celestrak hang then returns
+# and capture decodes time out). So also write the line into the cloud-init
+# template when present, which is the durable source of truth.
+CELESTRAK_LINE='127.0.0.1 celestrak.org celestrak.com # wxsat: celestrak unreachable from this Pi; force fast-fail so SatDump proceeds'
+if ! grep -q 'wxsat: celestrak' /etc/hosts; then
+  echo "$CELESTRAK_LINE" >> /etc/hosts
+fi
+HOSTS_TMPL=/etc/cloud/templates/hosts.debian.tmpl
+if [ -f "$HOSTS_TMPL" ] && ! grep -q 'wxsat: celestrak' "$HOSTS_TMPL"; then
+  echo "$CELESTRAK_LINE" >> "$HOSTS_TMPL"
+fi
+
 # ---------------------------------------------------------------------------
 # 7. systemd units + sudoers
 # ---------------------------------------------------------------------------
 echo "[7/9] Installing systemd units and sudoers..."
 for unit in sdr-fm@.service sdr-tuner.service sdr-scan.service \
-            sdr-am-scan.service sdr-captions.service; do
+            sdr-am-scan.service sdr-captions.service wxsat-scheduler.service; do
   install -m 0644 -o root -g root "$SRC/etc/systemd/system/$unit" "/etc/systemd/system/$unit"
 done
 
@@ -172,6 +214,7 @@ echo "[9/9] Enabling SDR services..."
 systemctl enable sdr-tuner.service
 systemctl enable sdr-fm@active.service
 systemctl enable sdr-captions.service
+systemctl enable wxsat-scheduler.service
 
 cat <<'EOF'
 

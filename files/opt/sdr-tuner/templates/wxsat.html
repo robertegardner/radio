@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Satellites — Meteor-M LRPT</title>
+<style>
+  :root {
+    --bg-deep:   #0a0a0c;
+    --bg-panel:  #15161a;
+    --bg-raise:  #1f2126;
+    --bg-button: #2a2d33;
+    --bg-button-hover: #353941;
+    --line:      #2c2e34;
+    --amber:     #ffae3a;
+    --amber-dim: #6b4818;
+    --green:     #6df09b;
+    --red:       #f06d6d;
+    --blue:      #6db0f0;
+    --text:      #e6e6e6;
+    --text-dim:  #888;
+    --text-faint:#555;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    min-height: 100%;
+    background: radial-gradient(circle at 50% -10%, #1a1c22 0%, var(--bg-deep) 70%) fixed;
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  body { padding: 1rem; }
+  .wrap { width: 100%; max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 1rem; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding: .25rem .25rem 0; }
+  header h1 {
+    font-size: 1.05rem; font-weight: 700; letter-spacing: .04em;
+    color: var(--amber); text-shadow: 0 0 10px var(--amber-dim);
+  }
+  header h1 .sub { color: var(--text-dim); font-weight: 400; text-shadow: none; font-size: .8rem; margin-left: .5rem; }
+  header a { color: var(--text-dim); text-decoration: none; font-size: .8rem; border: 1px solid var(--line);
+             padding: .35rem .7rem; border-radius: 8px; white-space: nowrap; }
+  header a:hover { background: var(--bg-button); color: var(--text); }
+
+  .panel {
+    background: linear-gradient(180deg, #1a1c22 0%, var(--bg-panel) 100%);
+    border: 1px solid var(--line); border-radius: 14px; padding: 1rem 1.1rem;
+    box-shadow: 0 12px 40px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.03);
+  }
+  .panel h2 {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .14em;
+    color: var(--text-dim); margin-bottom: .8rem; font-weight: 700;
+  }
+
+  /* Free-space meter */
+  .space-row { display: flex; align-items: center; gap: .9rem; }
+  .meter { flex: 1; height: 12px; border-radius: 6px; background: #0d0e10; overflow: hidden;
+           box-shadow: inset 0 1px 3px rgba(0,0,0,.7); }
+  .meter > span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--green), var(--amber)); transition: width .5s; }
+  .meter.warn > span { background: linear-gradient(90deg, var(--amber), var(--red)); }
+  .space-txt { font-family: 'Courier New', monospace; font-size: .8rem; color: var(--text-dim); white-space: nowrap; }
+  .space-txt b { color: var(--text); }
+
+  /* Planned passes */
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th { text-align: left; color: var(--text-faint); font-weight: 600; font-size: .68rem;
+       text-transform: uppercase; letter-spacing: .08em; padding: .3rem .5rem; }
+  td { padding: .45rem .5rem; border-top: 1px solid var(--line); }
+  td.sat { color: var(--amber); font-weight: 600; }
+  td.mono { font-family: 'Courier New', monospace; color: var(--text); }
+  .elev-pill { display: inline-block; min-width: 3.2em; text-align: center; padding: .1rem .4rem;
+               border-radius: 6px; font-family: 'Courier New', monospace; font-size: .8rem;
+               background: var(--bg-raise); color: var(--text); }
+  .elev-pill.hi { color: var(--green); }
+
+  /* Captures gallery */
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .8rem; }
+  .card { background: var(--bg-raise); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+          display: flex; flex-direction: column; }
+  .card .thumb { aspect-ratio: 4/3; background: #0d0e10 center/cover no-repeat; display: flex;
+                 align-items: center; justify-content: center; color: var(--text-faint); font-size: .8rem; text-align: center; }
+  .card .thumb a { display: block; width: 100%; height: 100%; }
+  .card .body { padding: .6rem .7rem .7rem; display: flex; flex-direction: column; gap: .35rem; }
+  .card .title { color: var(--amber); font-weight: 600; font-size: .9rem; }
+  .card .meta { font-size: .74rem; color: var(--text-dim); font-family: 'Courier New', monospace; }
+  .card .note { font-size: .78rem; color: var(--text); }
+  .card .foot { display: flex; align-items: center; justify-content: space-between; margin-top: .15rem; }
+  .badge { font-size: .64rem; text-transform: uppercase; letter-spacing: .08em; font-weight: 700;
+           padding: .15rem .45rem; border-radius: 5px; }
+  .badge.image       { background: rgba(109,240,155,.15); color: var(--green); }
+  .badge.skipped,
+  .badge.would_skip  { background: rgba(255,174,58,.15); color: var(--amber); }
+  .badge.would_capture { background: rgba(109,176,240,.15); color: var(--blue); }
+  .badge.failed      { background: rgba(240,109,109,.15); color: var(--red); }
+  .del { background: none; border: 1px solid var(--line); color: var(--text-faint); cursor: pointer;
+         border-radius: 6px; font-size: .72rem; padding: .2rem .5rem; }
+  .del:hover { color: var(--red); border-color: var(--red); }
+  .empty { color: var(--text-faint); font-size: .85rem; padding: .4rem .2rem; }
+  .dryban { font-size: .7rem; color: var(--blue); border: 1px solid var(--amber-dim);
+            background: rgba(109,176,240,.06); border-radius: 8px; padding: .4rem .7rem; }
+
+  /* Tuner status pill */
+  .tuner-pill { display: inline-flex; align-items: center; gap: .5rem; align-self: flex-start;
+                font-size: .75rem; color: var(--text-dim); border: 1px solid var(--line);
+                background: var(--bg-panel); border-radius: 999px; padding: .35rem .8rem; }
+  .tuner-pill .dot { width: 9px; height: 9px; border-radius: 50%; background: #444; flex: none; }
+  .tuner-pill.streaming .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .tuner-pill.decoding  .dot { background: var(--blue);  box-shadow: 0 0 8px var(--blue); }
+  .tuner-pill.capturing { color: var(--amber); border-color: var(--amber-dim); }
+  .tuner-pill.capturing .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber);
+                               animation: pulse 1.1s ease-in-out infinite; }
+  .tuner-pill b { color: var(--text); font-weight: 600; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .status-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  .chip { display: inline-flex; align-items: center; gap: .4rem; font-size: .72rem;
+          color: var(--text-dim); border: 1px solid var(--line); background: var(--bg-panel);
+          border-radius: 999px; padding: .3rem .7rem; }
+  .chip b { color: var(--text); font-weight: 600; }
+  .chip.live { color: var(--green); border-color: rgba(109,240,155,.4); }
+  .chip.auth { color: var(--amber); border-color: var(--amber-dim); background: rgba(255,174,58,.06); }
+  .chip.sync   { color: var(--green); border-color: rgba(109,240,155,.4); }
+  .chip.nosync { color: var(--red);   border-color: rgba(240,109,109,.4); }
+
+  /* Live pass panel */
+  .live-panel { border-color: var(--amber-dim);
+    box-shadow: 0 12px 40px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.03), 0 0 24px rgba(255,174,58,.05); }
+  .live-panel h2 { color: var(--amber); display: flex; justify-content: space-between; gap: 1rem; }
+  .live-panel h2 .live-sub { color: var(--text-dim); font-weight: 600; letter-spacing: .04em;
+                             text-transform: none; font-size: .72rem; }
+  .live-grid { display: flex; gap: 1.1rem; flex-wrap: wrap; align-items: flex-start; }
+  .live-spectrum { flex: 1; min-width: 260px; }
+  #wf { width: 100%; height: 150px; background: #05060a; border-radius: 8px;
+        display: block; box-shadow: inset 0 1px 4px rgba(0,0,0,.7); }
+  .wf-axis { display: flex; justify-content: space-between; font-size: .6rem; color: var(--text-faint);
+             font-family: 'Courier New', monospace; margin-top: .25rem; }
+  .lvl-row { display: flex; align-items: center; gap: .6rem; margin-top: .7rem; }
+  .lvl-label { font-size: .68rem; color: var(--text-dim); width: 3.4em; text-transform: uppercase; letter-spacing: .06em; }
+  .live-sky { width: 168px; text-align: center; flex: none; }
+  #sky { background: #05060a; border-radius: 50%; box-shadow: inset 0 1px 6px rgba(0,0,0,.7); }
+  .sky-readout { font-size: .7rem; color: var(--text-dim); font-family: 'Courier New', monospace; margin-top: .35rem; }
+  .decode-row { margin-top: 1rem; padding-top: .9rem; border-top: 1px solid var(--line); }
+  .dec-line { display: flex; gap: .5rem; margin-bottom: .55rem; flex-wrap: wrap; }
+  .dec-txt { font-family: 'Courier New', monospace; font-size: .72rem; color: var(--text-dim); margin-top: .35rem; }
+  @media (max-width: 560px) { .live-sky { width: 100%; } #sky { width: 168px; } }
+
+  /* Pass-review link + modal */
+  .pv { background: none; border: 1px solid var(--line); color: var(--blue); cursor: pointer;
+        border-radius: 6px; font-size: .72rem; padding: .2rem .5rem; }
+  .pv:hover { border-color: var(--blue); background: rgba(109,176,240,.08); }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 50;
+           display: none; align-items: flex-start; justify-content: center; padding: 1.2rem; overflow: auto; }
+  .modal-card { background: linear-gradient(180deg, #1a1c22 0%, var(--bg-panel) 100%);
+                border: 1px solid var(--amber-dim); border-radius: 14px; padding: 1.1rem 1.2rem;
+                width: 100%; max-width: 760px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+  .modal-head .pm-title { color: var(--amber); font-weight: 700; font-size: .95rem; }
+  #pmWf { width: 100%; height: 220px; background: #05060a; border-radius: 8px; display: block;
+          box-shadow: inset 0 1px 4px rgba(0,0,0,.7); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Weather Satellites <span class="sub">Meteor-M LRPT · 137.9 MHz</span></h1>
+    <a href="/radio">← Radio</a>
+  </header>
+
+  <div class="status-bar">
+    <div class="tuner-pill" id="tunerPill"><span class="dot"></span><span id="tunerText">Tuner: …</span></div>
+    <span class="chip" id="listenChip">👤 …</span>
+    <span class="chip auth" id="authChip" style="display:none">✓ next pass authorized</span>
+  </div>
+
+  <div id="dryban" class="dryban" style="display:none">
+    Dry-run mode — the scheduler is logging capture/skip decisions but not yet
+    touching the SDR. The radio stream is never interrupted.
+  </div>
+
+  <section class="panel live-panel" id="livePanel" style="display:none">
+    <h2><span id="liveTitle">Live pass</span><span class="live-sub" id="liveSub"></span></h2>
+    <div class="live-grid">
+      <div class="live-spectrum">
+        <canvas id="wf" width="512" height="150"></canvas>
+        <div class="wf-axis"><span id="wfLo">−250 kHz</span><span>137.9 MHz</span><span id="wfHi">+250 kHz</span></div>
+        <div class="lvl-row">
+          <span class="lvl-label">Signal</span>
+          <div class="meter" id="lvlMeter"><span id="lvlBar"></span></div>
+          <span class="space-txt" id="lvlTxt">—</span>
+        </div>
+      </div>
+      <div class="live-sky">
+        <canvas id="sky" width="168" height="168"></canvas>
+        <div class="sky-readout" id="skyText">—</div>
+      </div>
+    </div>
+    <div class="decode-row" id="decodeRow" style="display:none">
+      <div class="dec-line">
+        <span class="chip" id="decViterbi">Viterbi —</span>
+        <span class="chip" id="decDeframer">Deframer —</span>
+        <span class="chip" id="decSnr">SNR —</span>
+      </div>
+      <div class="meter"><span id="decBar" style="background:linear-gradient(90deg,var(--blue),var(--green))"></span></div>
+      <div class="dec-txt" id="decTxt">Decoding the recorded pass…</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Storage</h2>
+    <div class="space-row">
+      <div class="meter" id="meter"><span id="meterBar"></span></div>
+      <div class="space-txt" id="spaceTxt">—</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Planned captures · next passes</h2>
+    <div id="passesWrap"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>Past captures</h2>
+    <div id="capturesWrap"><div class="empty">Loading…</div></div>
+  </section>
+</div>
+
+<div class="modal" id="passModal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <span class="pm-title" id="pmTitle">Pass</span>
+      <button class="del" id="pmClose">✕ Close</button>
+    </div>
+    <div class="live-grid">
+      <div class="live-spectrum">
+        <canvas id="pmWf" width="512" height="220"></canvas>
+        <div class="wf-axis"><span id="pmLo">−250 kHz</span><span>137.9 MHz</span><span id="pmHi">+250 kHz</span></div>
+        <div class="dec-txt" id="pmLevel"></div>
+      </div>
+      <div class="live-sky">
+        <canvas id="pmSky" width="168" height="168"></canvas>
+        <div class="sky-readout" id="pmSkyTxt"></div>
+      </div>
+    </div>
+    <div class="dec-line" id="pmDecode" style="margin-top:.9rem"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function fmtLocal(unix) {
+  if (!unix) return "—";
+  const d = new Date(unix * 1000);
+  return d.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+function fmtTimeOnly(unix) {
+  if (!unix) return "—";
+  return new Date(unix * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+function fmtGB(bytes) {
+  if (bytes == null) return "—";
+  return (bytes / 1073741824).toFixed(1) + " GB";
+}
+const OUTCOME_LABEL = {
+  image: "Image", skipped: "Skipped", failed: "Failed",
+  would_capture: "Would capture", would_skip: "Would skip",
+};
+
+async function refreshStatus() {
+  try {
+    const s = await (await fetch('/api/wxsat/status')).json();
+    const pill = $('tunerPill'), txt = $('tunerText');
+    pill.className = 'tuner-pill ' + (s.tuner || 'idle');
+    const sat = (s.capturing_pass && s.capturing_pass.satellite) || '';
+    if (s.tuner === 'capturing')      txt.innerHTML = `Tuner: <b>capturing ${escapeHTML(sat)}</b> — stream paused`;
+    else if (s.tuner === 'decoding')  txt.innerHTML = `Tuner: <b>decoding ${escapeHTML(sat)}</b> — stream back up`;
+    else if (s.tuner === 'streaming') txt.innerHTML = 'Tuner: <b>streaming</b> the radio';
+    else                              txt.innerHTML = 'Tuner: <b>idle</b>';
+
+    // Drive the live-pass panel only while a capture/decode is in progress.
+    const wasActive = liveActive;
+    liveActive = (s.tuner === 'capturing' || s.tuner === 'decoding');
+    if (liveActive && !wasActive) refreshLive();   // show promptly on transition
+    else if (!liveActive && wasActive) showLive(false);
+
+    // Radio consumers (human listeners on the stream).
+    const lc = $('listenChip');
+    if (!s.listeners_ok) { lc.className = 'chip'; lc.innerHTML = '👤 listeners: —'; }
+    else if (s.listeners > 0) { lc.className = 'chip live'; lc.innerHTML = `👤 <b>${s.listeners}</b> listening`; }
+    else { lc.className = 'chip'; lc.innerHTML = '👤 no listeners'; }
+
+    // Next pass authorized to capture despite listeners?
+    $('authChip').style.display = s.next_authorized ? '' : 'none';
+  } catch (e) { /* leave last */ }
+}
+
+async function refreshSpace() {
+  try {
+    const s = await (await fetch('/api/wxsat/space')).json();
+    if (s.total) {
+      const pct = s.pct_used ?? 0;
+      $('meterBar').style.width = pct + '%';
+      $('meter').classList.toggle('warn', pct >= 85);
+      $('spaceTxt').innerHTML = `<b>${fmtGB(s.free)}</b> free · ${pct}% used of ${fmtGB(s.total)}`;
+    }
+  } catch (e) { /* leave last value */ }
+}
+
+async function refreshPasses() {
+  try {
+    const d = await (await fetch('/api/wxsat/passes')).json();
+    const passes = d.passes || [];
+    if (!passes.length) {
+      $('passesWrap').innerHTML = '<div class="empty">No upcoming passes above the elevation threshold.</div>';
+      return;
+    }
+    let rows = passes.map(p => {
+      const hi = (p.max_elev >= 40) ? ' hi' : '';
+      return `<tr>
+        <td class="sat">${p.satellite}</td>
+        <td class="mono">${fmtLocal(p.aos_unix)}</td>
+        <td class="mono">${fmtTimeOnly(p.los_unix)}</td>
+        <td class="mono">${(p.duration_min ?? 0).toFixed(1)}m</td>
+        <td><span class="elev-pill${hi}">${Math.round(p.max_elev)}°</span></td>
+      </tr>`;
+    }).join('');
+    $('passesWrap').innerHTML =
+      `<table><thead><tr><th>Satellite</th><th>AOS (local)</th><th>LOS</th><th>Dur</th><th>Max el</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    $('passesWrap').innerHTML = '<div class="empty">Could not load passes.</div>';
+  }
+}
+
+let dryRunSeen = false;
+async function refreshCaptures() {
+  try {
+    const d = await (await fetch('/api/wxsat/captures?recent=60')).json();
+    const caps = d.captures || [];
+    // Surface the dry-run banner if any record is a "would_*" outcome.
+    if (!dryRunSeen && caps.some(c => (c.outcome||'').startsWith('would_'))) {
+      dryRunSeen = true; $('dryban').style.display = '';
+    }
+    if (!caps.length) {
+      $('capturesWrap').innerHTML = '<div class="empty">No captures yet. Records appear here after each scheduled pass.</div>';
+      return;
+    }
+    $('capturesWrap').innerHTML = '<div class="gallery">' + caps.map(cardHTML).join('') + '</div>';
+  } catch (e) {
+    $('capturesWrap').innerHTML = '<div class="empty">Could not load captures.</div>';
+  }
+}
+
+function cardHTML(c) {
+  const oc = c.outcome || 'failed';
+  const label = OUTCOME_LABEL[oc] || oc;
+  let thumb;
+  if (oc === 'image' && c.thumb) {
+    const full = '/api/wxsat/image/' + c.image;
+    thumb = `<div class="thumb"><a href="${full}" target="_blank" rel="noopener"
+               style="background:#0d0e10 center/cover no-repeat;background-image:url('/api/wxsat/image/${c.thumb}')"></a></div>`;
+  } else {
+    const icon = oc.startsWith('would_') ? '◌' : (oc === 'failed' ? '⚠' : '⤫');
+    thumb = `<div class="thumb">${icon}&nbsp;${label}</div>`;
+  }
+  const note = c.notation ? `<div class="note">${escapeHTML(c.notation)}</div>`
+             : (c.reason ? `<div class="note" style="color:var(--text-dim)">${escapeHTML(c.reason)}</div>` : '');
+  const elev = (c.max_elev != null) ? `${Math.round(c.max_elev)}° max` : '';
+  return `<div class="card">
+    ${thumb}
+    <div class="body">
+      <div class="title">${escapeHTML(c.satellite || '')}</div>
+      <div class="meta">${fmtLocal(c.aos_unix)} · ${elev}</div>
+      ${note}
+      <div class="foot">
+        <span class="badge ${oc}">${label}</span>
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap;justify-content:flex-end">
+          ${c.has_panel ? `<button class="pv" data-pv="${escapeHTML(c.id)}">Pass view</button>` : ''}
+          ${c.has_iq ? `<button class="pv" data-rb="${escapeHTML(c.id)}">${c.has_panel ? 'Rebuild' : 'Rebuild from IQ'}</button>` : ''}
+          <button class="del" data-id="${escapeHTML(c.id)}">Delete</button>
+        </span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function escapeHTML(s) {
+  return String(s ?? '').replace(/[&<>"']/g, m =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.del');
+  if (!btn) return;
+  if (!confirm('Delete this capture?')) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/wxsat/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: btn.dataset.id}),
+    });
+    if (r.ok) { refreshCaptures(); refreshSpace(); }
+    else { btn.disabled = false; alert('Delete failed.'); }
+  } catch (err) { btn.disabled = false; alert('Delete failed.'); }
+});
+
+// Pass-view open/close + rebuild-from-IQ (delegated).
+document.addEventListener('click', (e) => {
+  const pv = e.target.closest('[data-pv]');
+  if (pv) { openPassView(pv.dataset.pv); return; }
+  const rb = e.target.closest('[data-rb]');
+  if (rb) { rebuildFromIq(rb); return; }
+  if (e.target.id === 'pmClose' || e.target.id === 'passModal') closePassView();
+});
+
+async function rebuildFromIq(btn) {
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'Rebuilding…';
+  try {
+    const r = await fetch('/api/wxsat/rebuild', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: btn.dataset.rb}),
+    });
+    const j = await r.json();
+    if (!j.ok) { alert('Rebuild failed: ' + (j.error || '')); btn.disabled = false; btn.textContent = old; return; }
+    // Reconstruction runs in the background (reads the whole IQ); refresh the
+    // gallery a couple times to pick up the new "Pass view" link when it lands.
+    setTimeout(refreshCaptures, 25000);
+    setTimeout(refreshCaptures, 50000);
+  } catch (e) { alert('Rebuild failed.'); btn.disabled = false; btn.textContent = old; }
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePassView(); });
+
+/* ---- Live pass: spectrum/waterfall, signal, sky track, decode ---- */
+let liveActive = false;   // set from tuner status; gates live polling
+
+function fmtCountdown(sec) {
+  if (sec == null || sec < 0) return "—";
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+const WF_STOPS = [[0,0,0],[12,20,64],[0,150,150],[120,220,90],[250,220,80],[240,90,60]];
+function wfColor(v) {                       // v in dB, ~[-5,45] -> rgb
+  let t = (v + 5) / 50; t = Math.max(0, Math.min(1, t));
+  const f = t * (WF_STOPS.length - 1), i = Math.floor(f), k = f - i;
+  const a = WF_STOPS[i], b = WF_STOPS[Math.min(i + 1, WF_STOPS.length - 1)];
+  return `rgb(${a[0]+(b[0]-a[0])*k|0},${a[1]+(b[1]-a[1])*k|0},${a[2]+(b[2]-a[2])*k|0})`;
+}
+
+function pushWaterfall(fft, fs) {
+  const c = document.getElementById('wf'); if (!c || !fft) return;
+  const ctx = c.getContext('2d'), W = c.width, H = c.height;
+  const img = ctx.getImageData(0, 0, W, H - 1);
+  ctx.putImageData(img, 0, 1);              // scroll down 1px
+  // Show central ±250 kHz (clamped to Nyquist) of the full-span fft.
+  const n = fft.length, half = Math.min(250000, fs / 2);
+  const frac = (2 * half) / fs;
+  const lo = Math.floor(n * (0.5 - frac / 2)), hi = Math.ceil(n * (0.5 + frac / 2));
+  for (let x = 0; x < W; x++) {
+    const bin = lo + Math.floor(x / W * (hi - lo));
+    ctx.fillStyle = wfColor(fft[Math.max(0, Math.min(n - 1, bin))]);
+    ctx.fillRect(x, 0, 1, 1);
+  }
+  const kHz = Math.round(half / 1000);
+  document.getElementById('wfLo').textContent = '−' + kHz + ' kHz';
+  document.getElementById('wfHi').textContent = '+' + kHz + ' kHz';
+}
+
+function skyProj(el, az, cx, cy, R) {
+  const r = (90 - el) / 90 * R, a = az * Math.PI / 180;
+  return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
+}
+function drawSky(c, track, az, el) {
+  if (!c) return;
+  const x = c.getContext('2d'), W = c.width, H = c.height, cx = W/2, cy = H/2, R = W/2 - 12;
+  x.clearRect(0, 0, W, H);
+  x.strokeStyle = '#2c2e34'; x.fillStyle = '#555'; x.lineWidth = 1;
+  x.font = '9px monospace'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  [0, 30, 60].forEach(e => { const r = (90 - e) / 90 * R;
+    x.beginPath(); x.arc(cx, cy, r, 0, 7); x.stroke(); });
+  [['N',cx,cy-R-5],['S',cx,cy+R+6],['E',cx+R+6,cy],['W',cx-R-6,cy]]
+    .forEach(([t,px,py]) => x.fillText(t, px, py));
+  if (track && track.length) {              // pass arc (el >= 0 only)
+    x.strokeStyle = 'rgba(255,174,58,.55)'; x.lineWidth = 1.5; x.beginPath();
+    let started = false;
+    track.forEach(p => { if (p[1] < 0) return; const [px, py] = skyProj(p[1], p[2], cx, cy, R);
+      if (!started) { x.moveTo(px, py); started = true; } else x.lineTo(px, py); });
+    x.stroke();
+  }
+  if (el != null && el >= 0) {              // current position
+    const [px, py] = skyProj(el, az || 0, cx, cy, R);
+    x.fillStyle = '#ffae3a'; x.beginPath(); x.arc(px, py, 4, 0, 7); x.fill();
+    x.strokeStyle = 'rgba(255,174,58,.9)'; x.lineWidth = 2; x.stroke();
+  }
+}
+
+function showLive(on) { document.getElementById('livePanel').style.display = on ? '' : 'none'; }
+
+async function refreshLive() {
+  if (!liveActive) { showLive(false); return; }
+  let d;
+  try { d = await (await fetch('/api/wxsat/live')).json(); } catch (e) { return; }
+  if (!d || !d.live) { showLive(false); return; }
+  showLive(true);
+  const now = Date.now() / 1000;
+  const sat = escapeHTML(d.satellite || 'satellite');
+
+  if (d.phase === 'decoding') {
+    document.getElementById('liveTitle').textContent = 'Decoding ' + (d.satellite || '');
+    document.getElementById('liveSub').textContent = 'offline decode — stream back up';
+    document.getElementById('decodeRow').style.display = '';
+    const vit = document.getElementById('decViterbi'), def = document.getElementById('decDeframer');
+    vit.textContent = 'Viterbi ' + (d.viterbi || '—');
+    vit.className = 'chip ' + (d.viterbi === 'SYNC' ? 'sync' : (d.viterbi ? 'nosync' : ''));
+    def.textContent = 'Deframer ' + (d.deframer || '—');
+    def.className = 'chip ' + (d.deframer === 'SYNC' ? 'sync' : (d.deframer ? 'nosync' : ''));
+    document.getElementById('decSnr').textContent = 'SNR ' + (d.snr != null ? d.snr + ' dB' : '—');
+    document.getElementById('decBar').style.width = (d.decode_pct || 0) + '%';
+    document.getElementById('decTxt').textContent =
+      d.synced === true ? 'Frames synced — building image…'
+      : d.synced === false ? 'No sync — likely too weak this pass.'
+      : 'Decoding the recorded pass… ' + (d.decode_pct != null ? Math.round(d.decode_pct) + '%' : '');
+  } else {
+    document.getElementById('decodeRow').style.display = 'none';
+    document.getElementById('liveTitle').textContent = 'Recording ' + (d.satellite || '');
+    const losIn = d.los_unix ? fmtCountdown(d.los_unix - now) : '—';
+    const elTxt = d.elev != null ? (d.elev >= 0 ? d.elev.toFixed(0) + '°' : 'below horizon') : '—';
+    document.getElementById('liveSub').textContent = `el ${elTxt} · LOS in ${losIn}`;
+    pushWaterfall(d.fft, d.samplerate || 1000000);
+    // Signal meter: peak % of ADC full-scale (headroom check).
+    const pk = d.peak_pct || 0;
+    document.getElementById('lvlBar').style.width = Math.min(100, pk) + '%';
+    document.getElementById('lvlMeter').classList.toggle('warn', pk >= 90);
+    document.getElementById('lvlTxt').innerHTML =
+      `peak <b>${pk.toFixed(1)}%</b> · rms ${d.rms != null ? d.rms.toFixed(0) : '—'}`;
+    drawSky(document.getElementById('sky'), d.track, d.azim, d.elev);
+    document.getElementById('skyText').textContent =
+      d.elev != null && d.elev >= 0 ? `el ${d.elev.toFixed(1)}° · az ${Math.round(d.azim || 0)}°`
+                                    : 'below horizon';
+  }
+}
+
+/* ---- Pass review: replay a saved snapshot from the gallery ---- */
+function drawWaterfallMatrix(c, rows, fs, halfKhz) {
+  const x = c.getContext('2d'), W = c.width, H = c.height;
+  x.fillStyle = '#05060a'; x.fillRect(0, 0, W, H);
+  if (!rows || !rows.length) {
+    x.fillStyle = '#555'; x.font = '12px monospace'; x.textAlign = 'center';
+    x.fillText('no spectrum recorded for this pass', W / 2, H / 2); return;
+  }
+  const n = rows[0].length, half = halfKhz * 1000, frac = Math.min(1, (2 * half) / fs);
+  const lo = Math.floor(n * (0.5 - frac / 2)), hi = Math.ceil(n * (0.5 + frac / 2));
+  const R = rows.length;
+  const img = x.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    const row = rows[Math.min(R - 1, Math.floor(y / H * R))];
+    for (let px = 0; px < W; px++) {
+      const bin = lo + Math.floor(px / W * (hi - lo));
+      const rgb = wfColor(row[Math.max(0, Math.min(n - 1, bin))]).match(/\d+/g);
+      const o = (y * W + px) * 4;
+      img.data[o] = +rgb[0]; img.data[o+1] = +rgb[1]; img.data[o+2] = +rgb[2]; img.data[o+3] = 255;
+    }
+  }
+  x.putImageData(img, 0, 0);
+}
+
+async function openPassView(id) {
+  let d;
+  try { d = await (await fetch('/api/wxsat/pass/' + encodeURIComponent(id))).json(); }
+  catch (e) { return; }
+  if (!d || !d.available) { alert('No live-panel data was recorded for this pass.'); return; }
+  const elev = d.max_elev != null ? ` · ${Math.round(d.max_elev)}° max` : '';
+  $('pmTitle').textContent = (d.satellite || 'Pass') + ' · ' + fmtLocal(d.aos_unix) + elev;
+  const fs = d.samplerate || 1000000, half = d.half_khz || 250;
+  drawWaterfallMatrix($('pmWf'), d.waterfall, fs, half);
+  $('pmLo').textContent = '−' + Math.round(half) + ' kHz';
+  $('pmHi').textContent = '+' + Math.round(half) + ' kHz';
+  const peaks = (d.level || []).map(s => s[1]).filter(v => v != null);
+  $('pmLevel').innerHTML = peaks.length
+    ? `peak signal <b>${Math.max(...peaks).toFixed(1)}%</b> ADC · ${(d.waterfall || []).length} spectra over the pass`
+    : 'no signal samples recorded';
+  drawSky($('pmSky'), d.track, null, null);
+  $('pmSkyTxt').textContent = d.max_elev != null ? `pass arc · ${Math.round(d.max_elev)}° max elevation` : '';
+  const dec = d.decode || {};
+  const chip = (t, cls) => `<span class="chip ${cls || ''}">${t}</span>`;
+  $('pmDecode').innerHTML =
+    chip('Viterbi ' + (dec.viterbi || '—'), dec.viterbi === 'SYNC' ? 'sync' : (dec.viterbi ? 'nosync' : '')) +
+    chip('Deframer ' + (dec.deframer || '—'), dec.deframer === 'SYNC' ? 'sync' : (dec.deframer ? 'nosync' : '')) +
+    chip('best SNR ' + (dec.best_snr != null ? dec.best_snr + ' dB' : '—')) +
+    chip(dec.synced === true ? 'frames synced' : (dec.synced === false ? 'no sync' : 'decode n/a'),
+         dec.synced === true ? 'sync' : (dec.synced === false ? 'nosync' : ''));
+  $('passModal').style.display = 'flex';
+}
+function closePassView() { $('passModal').style.display = 'none'; }
+
+function refreshAll() { refreshStatus(); refreshSpace(); refreshPasses(); refreshCaptures(); }
+refreshAll();
+setInterval(refreshAll, 30000);
+setInterval(refreshStatus, 10000);   // tuner status reacts faster than the gallery
+setInterval(refreshLive, 1500);      // live spectrum/decode (no-op fetch when idle)
+</script>
+</body>
+</html>
