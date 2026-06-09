@@ -100,13 +100,19 @@ Application code lives in `files/opt/sdr-tuner/`. On the Pi it deploys to
 | `templates/wxsat.html` | Weather-satellite page (`/wxsat`): live **tuner-status pill** (streaming / capturing / decoding / idle), free-space meter, planned-pass schedule, and a gallery of past captures (image / skipped+notation / failed), with per-capture delete. Server-rendered shell + vanilla JS polling the wxsat APIs. |
 | `templates/index.html` | Admin/control UI: stations table, scan buttons, settings, RDS now-playing, captions/lyrics view. Playing pill shows "HD1/HD2" suffix when in HD mode. FM rows show "HD1" tune button for stations with known `hd_programs`. |
 | `templates/radio.html` | Stereo-style UI: amber-LCD frequency display (tap to direct-tune), HD LED + subchannel badge, HD toggle button, HD1–HD4 subchannel selector row, HD rows in station modal, 12 favorites (localStorage, HD-aware), seek/scan, direct-tune modal (⌨ button or tap freq display), browser audio playback. Handles `hd_probing` / `hd_locked` / `hd_unavailable` state from the API. Also shows the next weather-satellite capture with a live countdown and an "Allow this pass" button (`POST /api/wxsat/authorize`) so a listener can pre-approve the interruption. |
+| `iq_capture.py` | **FM-multistation** device owner. Opens the dx-R2 once (Antenna A, 8 Msps **CF32**, fc 98.0 MHz, IF BW 8 MHz) and fans raw IQ to channel pipelines over a `SOCK_SEQPACKET` UNIX socket (atomic per-block send → slow consumers drop whole sample-aligned blocks, never desync). Dual-mode: server (default) + `--subscribe` (bridges the socket to a csdr pipeline's stdin). Sets explicit dx-R2 gain elements — `GAIN_RFGR`/`GAIN_IFGR` — because the whole-band capture overloads the ADC unless RFGR attenuates the LNA (RFGR=9). ADC overload meter. |
+| `stereo_decode.py` | FM stereo decoder (pilot-squaring, vectorized numpy, no scipy): bandpass 19 k → square → bandpass 38 k (group-delay-aligned) → coherent L−R demod → matrix, with auto-blend-to-mono on weak pilot. Reads MPX float32 @250k, writes s16le stereo; de-emphasis + 48 k resample done by ffmpeg. |
+| `channel_pipeline.sh` | One FM channel out of the shared IQ: `iq_capture --subscribe \| csdr shift → 2-stage decimate (/8 then /4) → fmdemod \| stereo_decode \| ffmpeg → Icecast`. Optional RDS tee (`csdr convert_f_s16 → redsea → rds_watcher`). Args: freq, mount, stereo, bitrate, rds, primary. |
+| `mux_supervisor.py` | FM-multistation supervisor (`sdr-mux.service`). Reads `channels.json`, runs one `channel_pipeline.sh` per channel (≤`MAX_CHANNELS`=3), SIGHUP-reloads without dropping unchanged channels, restarts crashed pipelines, owns `mux_status.json`. Mounts: primary → `/fm.mp3` (+ RDS + `now_playing.json` + captions), others → `/m{freq}.mp3`. |
+| `templates/multi.html` | FM-multistation page (`/multi`): start/stop mux, channel editor (window-aware station picker, ≤3, per-channel stereo/RDS/primary/bitrate), live per-mount cards with now-playing + audio players. Server-rendered + vanilla JS polling `/api/mux/*`. |
 
 The systemd units in `files/etc/systemd/system/` are:
 
-- `sdr-fm@.service` — templated; `sdr-fm@active.service` is the running stream
+- `sdr-fm@.service` — templated; `sdr-fm@active.service` is the running stream (legacy mono, the boot default)
 - `sdr-tuner.service` — Flask web UI
 - `sdr-scan.service` / `sdr-am-scan.service` — one-shot band scans, auto-stop and resume the stream around themselves via `ExecStartPre`/`ExecStartPost`
 - `sdr-captions.service` — caption orchestrator
+- `sdr-iq-capture.service` / `sdr-mux.service` — **FM-multistation mode** (opt-in, not enabled). `sdr-mux` `Requires=` capture; both `Conflicts=sdr-fm@active`. Engage via `/multi` or `POST /api/mux/start`; rollback to mono via `POST /api/mux/stop`. Mutually exclusive with mono / AM / wxsat (one device).
 
 Config files in `files/etc/sdr-streams/` are `.example` files (real ones are
 on the Pi, not in git):
@@ -116,6 +122,8 @@ on the Pi, not in git):
 - `captions.env` — Whisper URL, AcoustID key, lyric offsets
 - `overrides.json` — hand-curated station overrides. FM entries can include `"hd_programs": [0, 1]` to declare known HD subchannels (0-indexed), which surfaces HD rows in the station browser and the "HD1" tune button in admin.
 - `ui.json` — user-configurable UI settings (created on first save in admin)
+- `mux.env` — FM-multistation config: `CENTER_MHZ`, `FS`, `IF_BW`, `ANTENNA`, gain (`GAIN_RFGR`/`GAIN_IFGR`), `DECIM1`/`DECIM2`, window (`WINDOW_LO_MHZ`/`WINDOW_HI_MHZ`, 95.0–101.0), `IQ_SOCKET`, stereo tuning (`STEREO_SCALE`/`STEREO_PILOT_FLOOR`/`MONO_SCALE`).
+- `channels.json` — FM-multistation channel set (written by Flask, `radio:radio` 0660): up to 3 `{freq, stereo, rds, primary, bitrate}`, all within the window.
 
 ## Design conventions
 
@@ -167,6 +175,38 @@ The Flask app on port 8080 serves both UIs and the JSON APIs. The radio UI
 polls `/api/now_playing` every ~1s for current RDS/captions/lyrics, and
 `/api/stations` every 30s for the scanned station list. Tuning is a JSON
 POST to `/api/tune` which writes `active.env` and restarts `sdr-fm@active`.
+
+### FM-multistation mode (opt-in)
+
+A separate path from the legacy mono stream above. One capture daemon owns the
+dx-R2 and demodulates several FM stations at once, each on its own mount:
+
+```
+dx-R2 (Antenna A) ── iq_capture.py ── SOCK_SEQPACKET fanout (/run/sdr-streams/iq.sock)
+   8 Msps CF32          (owns device)        │  (full IQ to each subscriber, drops slow ones)
+   fc 98.0 MHz                ┌──────────────┼──────────────┐
+                       channel_pipeline.sh  …  (≤3, one per channels.json entry)
+                       subscribe → csdr shift → /8 → /4 decimate → fmdemod
+                              │ (composite MPX 250 kHz)
+                       ├── stereo_decode.py (pilot-squaring) ── ffmpeg ─→ Icecast /m{freq}.mp3
+                       └── (rds) tee → csdr convert_f_s16 → redsea → rds_watcher → now_playing-<mount>.json
+```
+
+- **Supervisor model**, not the env-file+restart model: `sdr-mux.service`
+  (`mux_supervisor.py`) reads `channels.json` and launches/reaps one pipeline
+  per channel; `SIGHUP` reloads the set without dropping unchanged channels.
+  Flask writes `channels.json` and signals the mux — it never touches the device.
+- **Primary channel** serves `/fm.mp3` (so the existing radio UI + captions keep
+  working) and writes the legacy `now_playing.json`; others serve `/m{freq}.mp3`.
+- **Mutually exclusive** with mono / AM / wxsat (one device). `sdr-mux` `Requires=`
+  `sdr-iq-capture`, both `Conflicts=sdr-fm@active`. AM/FM tuning (which starts
+  `sdr-fm@active`) stops the mux via Conflicts; `wxsat_capture.sh` stops it
+  explicitly. Engage via `/multi` / `POST /api/mux/start`; roll back via
+  `POST /api/mux/stop`. Endpoints: `/api/mux/{status,channels,start,stop}`,
+  per-mount `/api/now_playing?mount=`.
+- **CPU ceiling = 3 channels** on this Pi (shared with the scanner). Watch
+  `mux_status.json` → `capture.drops` (nonzero = audio glitching). See the
+  "FM stereo + multistation" memory for the build gotchas.
 
 ### Stream delivery & resilience (weak/remote networks)
 
@@ -310,34 +350,23 @@ stations. Probed the 5 strongest FM signals (90.9, 97.5, 102.9, 106.1,
 Nearest HD market is St. Louis (~115 miles). The feature is ready and
 waiting for a signal.
 
+### Shipped
+
+- **FM stereo + multistation via wideband IQ (`/multi`).** Done — NOT via
+  nrsc5. The legacy mono path (`rx_fm -M fm` + ffmpeg `-ac 1` → `/fm.mp3`)
+  is still the boot default; FM-multistation is an opt-in mode that captures
+  raw 8 Msps IQ once (`iq_capture.py`) and demodulates each station from its
+  own subscriber pipeline (`channel_pipeline.sh`), so stereo is a property of
+  the demod stage and an extra station is just another pipeline. Stereo is a
+  pilot-squaring numpy decoder (`stereo_decode.py`); RDS is redsea per channel;
+  the supervisor (`mux_supervisor.py`) manages up to **3** channels — the clean
+  CPU ceiling on this Pi alongside the scanner. See "How FM-multistation works"
+  below and [[memory: project_fm_multistation]] for the gotchas (csdr aarch64
+  build override, dx-R2 RFGR=9 for whole-band overload, stereo group-delay
+  alignment, 2-stage decimation). Lifting to 4 channels needs a polyphase
+  channelizer or a C stereo decoder (deferred).
+
 ### Planned features
-
-- **FM stereo via nrsc5.** The analog FM path is mono today because
-  `rtl_fm -M fm` is a mono demodulator. nrsc5 has an analog mode
-  (`--analog` / `-N`) that outputs proper stereo PCM by decoding the
-  19 kHz pilot and 38 kHz L-R subcarrier. Since nrsc5 is already
-  installed for HD Radio and `hd_stream.py` already manages it, the
-  cleanest path is to extend `hd_stream.py` (or add a sibling
-  `analog_stream.py`) to run nrsc5 in analog mode for `MODE=wbfm`,
-  replacing the rtl_fm + ffmpeg leg.
-
-  Why nrsc5 over csdr for this:
-  - csdr is lighter on CPU but less actively maintained
-  - csdr's pipeline doesn't easily branch IQ for parallel decoders, which
-    complicates the redsea integration we'd have to preserve
-  - One tool, one set of CPU/code-complexity costs, already deployed
-
-  Open question: where does RDS come from in this path? nrsc5 emits RDS
-  natively for analog FM, which could replace redsea entirely for the FM
-  branch (simpler) — or we keep redsea running in parallel against a
-  separate `rtl_fm` instance just for RDS (more code, but isolates the
-  stereo upgrade from the RDS parser we already trust). Decide once we
-  see what nrsc5's analog RDS output actually looks like.
-
-  Once stereo lands, consider bumping `BITRATE=128k` (the analog default)
-  to 192k or 256k in `active.env`. 128k stereo MP3 has audibly narrowed
-  imaging vs. 192k+. Trade-off is Icecast bandwidth (~30 MB/hour/listener
-  at 256k).
 
 - **HD Radio PAD metadata.** nrsc5 logs station name, artist, and title
   to stderr as it decodes. Capturing this (via a pipe on stderr) and

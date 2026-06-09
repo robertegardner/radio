@@ -12,17 +12,28 @@ every time.
 > than none — it makes Claude confidently wrong. If a conversation ends with
 > "we decided X" or "I finished Y", that is the signal to update.
 
-Last meaningful update: 2026-06-02 — **FM stream self-heal on SDRplay device
-loss** (radio PR #1). The sibling scanner project's SDRTrunk was enumerating our
-RSPdx-R2 on startup and knocking `rx_fm` off the device ("Device has been
-removed"), and this rx_fm build loops that error forever without exiting so
-systemd never restarted it. Added `device_loss_guard.sh` (watches rx_fm stderr,
-kills the service on the marker → systemd restarts and re-acquires). The
-persistent contention is prevented on the scanner side by restricting
-`/usr/local/lib/libsdrplay_api.so*` to the `radio` group (in the scanner's
-bootstrap.sh) — **re-apply after any SDRplay API reinstall**. Radio FM + scanner
-MOSWIN now run simultaneously. Full record:
-`notes/2026-06-02-fm-device-loss-selfheal.md`.
+Last meaningful update: 2026-06-09 — **FM stereo + multistation shipped** (radio
+PR #6, merged to main), and **weather-satellite /wxsat shipped** (PR #5, merged).
+FM-multistation: a new opt-in mode captures raw 8 Msps IQ once (`iq_capture.py`,
+Antenna A) and demodulates several FM stations at once, each on its own Icecast
+mount, via per-station csdr+numpy pipelines (`channel_pipeline.sh`,
+`stereo_decode.py`, `mux_supervisor.py`, `/multi` UI). This finally adds FM
+**stereo** (pilot-squaring decoder) and replaces the backburnered "stereo via
+nrsc5" plan — done with our own IQ demod instead. Legacy mono (`sdr-fm@active`
+→ `/fm.mp3`) remains the boot default; the mux is mutually exclusive with it /
+AM / wxsat (one device). Clean CPU ceiling on this Pi (shared with the scanner)
+is **3 channels**. Key gotchas live in the repo CLAUDE.md ("How FM-multistation
+works") and Claude Code's project memory.
+
+Prior: 2026-06-02 — **FM stream self-heal on SDRplay device loss** (radio PR #1).
+The sibling scanner project's SDRTrunk was enumerating our RSPdx-R2 on startup
+and knocking `rx_fm` off the device ("Device has been removed"), and this rx_fm
+build loops that error forever without exiting so systemd never restarted it.
+Added `device_loss_guard.sh` (watches rx_fm stderr, kills the service on the
+marker → systemd restarts and re-acquires). The persistent contention is
+prevented on the scanner side by restricting `/usr/local/lib/libsdrplay_api.so*`
+to the `radio` group (in the scanner's bootstrap.sh) — **re-apply after any
+SDRplay API reinstall**. Full record: `notes/2026-06-02-fm-device-loss-selfheal.md`.
 
 Prior: 2026-05-27 — dx-R2 fully deployed and AM stack rebuilt (HDR + Python
 demodulator); local switching-supply RFI identified as the cap on AM audio
@@ -177,12 +188,17 @@ Cat 5 long-wire is up. Reference facts kept for any future rebuild:
 
 ## Project status snapshot
 
-- **Radio project:** running live on the dx-R2. FM uses rx_fm via SoapySDR
-  on Antenna A. AM uses a Python demodulator (`am_stream.py`) on Antenna C
-  — HDR mode + DAB notch engaged, PLL-based synchronous detection,
-  block-rate normalization (per-sample EMA was reverted during 2026-05-27
-  bisection, see "Recent investigation" below). HD Radio falls back to
-  analog FM (no HD stations in market).
+- **Radio project:** running live on the dx-R2. Default FM is mono rx_fm via
+  SoapySDR on Antenna A. **FM-multistation (opt-in, `/multi`)** adds true stereo
+  + up to 3 simultaneous stations via wideband IQ capture + per-station csdr/numpy
+  pipelines — shipped 2026-06-09 (PR #6). AM uses a Python demodulator
+  (`am_stream.py`) on Antenna C — HDR mode + DAB notch engaged, PLL-based
+  synchronous detection, block-rate normalization (per-sample EMA was reverted
+  during 2026-05-27 bisection, see "Recent investigation" below). HD Radio falls
+  back to analog FM (no HD stations in market).
+- **Weather satellites (`/wxsat`):** shipped 2026-06-09 (PR #5). Predicts +
+  captures Meteor-M2-4 LRPT passes (SatDump), skip-when-listening. Reception is
+  antenna-C/N-limited — see the wxsat memory.
 - **AM RFI hunt (open):** local AM is currently noise-floor-limited, not
   software-limited. Two strong wide RFI signals at ~1186 and ~1340 kHz are
   ~20 dB louder than legitimate local stations. Next step is portable AM
@@ -230,8 +246,11 @@ Captured in the repo's CLAUDE.md, summarized here:
 - **Reintroduce per-sample EMA normalization** in `am_stream.py` after
   the RFI environment is clean enough that demod-quality differences
   are visible above the noise floor.
-- **FM stereo via nrsc5** — analog FM is mono today; nrsc5 analog mode adds
-  stereo. Bump MP3 bitrate to 192–256k once stereo lands.
+- **~~FM stereo via nrsc5~~ — DONE differently (2026-06-09, PR #6).** Shipped as
+  the opt-in FM-multistation mode (wideband IQ + our own pilot-squaring stereo
+  decoder), not nrsc5. Follow-on: lift the 3-channel cap (polyphase channelizer
+  or a C stereo decoder); sum wxsat skip-when-listening across mux mounts; add
+  NPMplus proxy entries for `/m*.mp3`.
 - **NPMplus auth on admin endpoints** — `/radio` and read-only APIs stay
   public; `/`, `/tune`, `/scan-*`, `/settings` should require auth.
 - **Favorites sync/export** — presets are per-browser localStorage today;
