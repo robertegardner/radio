@@ -6,10 +6,13 @@
 set -euo pipefail
 source /etc/sdr-streams/active.env
 
-# Publish host is env-able (active.env ICECAST_HOST): since the 2026-06-10
-# distribution cutover the public icecast lives on the rack (192.168.6.82);
-# V1 DSP on the Pi publishes there. Default stays localhost for safety.
-ICECAST_URL="icecast://source:${ICECAST_PASS}@${ICECAST_HOST:-localhost}:8000/${MOUNT}"
+# Publish host is env-able (active.env ICECAST_HOST), DEFAULT = the rack
+# Icecast (192.168.6.82, the public one since the 2026-06-10 cutover). The
+# default must be the rack, not localhost: app.py's write_env() rewrites
+# active.env on every tune and drops ICECAST_HOST — with a localhost default
+# the first tune broke publishing (and the Pi icecast 403'd the source while
+# its legacy relay block still defined /fm.mp3).
+ICECAST_URL="icecast://source:${ICECAST_PASS}@${ICECAST_HOST:-192.168.6.82}:8000/${MOUNT}"
 
 # Reset RDS state on tune (caption orchestrator watches for this).
 : > /run/sdr-streams/now_playing.json
