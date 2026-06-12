@@ -477,6 +477,7 @@
       <button class="btn" id="direct-tune-btn" title="Direct tune">⌨</button>
       <button class="btn" id="stations-btn" title="Browse stations">≡</button>
       <button class="btn toggle" id="viz-toggle" title="Audio visualizer — tap the background for fullscreen, double-tap for next pattern" style="display:none">VIZ</button>
+      <button class="btn toggle" id="duck-toggle" title="Duck on talk — near-mute commercials/DJ talk, prompt restore on music">DUCK</button>
     </div>
     <div></div>
     <div class="ctrl-group">
@@ -582,6 +583,8 @@ const LS_HD       = 'sdr-radio.hd';
 const LS_SUBCH    = 'sdr-radio.subch';
 const LS_VIZ_FM   = 'sdr-radio.viz.fm';
 const LS_VIZ_AM   = 'sdr-radio.viz.am';
+const LS_DUCK_FM  = 'sdr-radio.duck.fm';
+const LS_DUCK_AM  = 'sdr-radio.duck.am';
 
 const $ = id => document.getElementById(id);
 const audio = $('audio');
@@ -712,7 +715,7 @@ async function tuneTo(freq, band, hd = false, subchannel = 0) {
     updateBandUI();
     updateHdUI();
     renderPresets();
-    if (bandChanged) applyVizBandPref();
+    if (bandChanged) { applyVizBandPref(); applyDuckBandPref(); }
     if (wasPlaying) {
       await waitForStream();
       $('stream-led').classList.remove('hd');
@@ -1074,7 +1077,7 @@ async function pollNowPlaying() {
       currentHd         = !!d.hd;
       currentSubchannel = d.subchannel || 0;
       if (changed) { updateBandUI(); updateHdUI(); renderPresets(); }
-      if (bandChanged) applyVizBandPref();
+      if (bandChanged) { applyVizBandPref(); applyDuckBandPref(); }
     }
     // Frequency display
     if (currentFreq) {
@@ -1253,20 +1256,38 @@ let vizAvailable = false;        // libs loaded + supported — decided once at 
 let vizOn = false;
 let audioCtx = null;
 let mediaSrc = null;             // the once-per-element MediaElementSource guard
+let duckGain = null;             // source → duckGain → destination (duck-on-talk)
 let visualizer = null;
 let vizPresetMap = null, vizPresetKeys = [], vizPresetCurrent = '';
 let vizRaf = null, vizPresetTimer = null, vizTapTimer = null;
 
 function vizPrefKey() { return currentBand === 'am' ? LS_VIZ_AM : LS_VIZ_FM; }
 
-function ensureVizGraph() {
+// The shared part of the WebAudio graph (used by VIZ and DUCK):
+// <audio> → MediaElementSource → duckGain → destination. The viz and the
+// duck classifier both tap mediaSrc PRE-gain, so they always see the full
+// signal even while the output is ducked. The volume slider stays on the
+// element and composes with the gain.
+function ensureAudioGraph() {
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
     if (!mediaSrc) {
       mediaSrc = audioCtx.createMediaElementSource(audio);
-      mediaSrc.connect(audioCtx.destination);   // keep playback wired even with VIZ off
+      duckGain = audioCtx.createGain();
+      mediaSrc.connect(duckGain);
+      duckGain.connect(audioCtx.destination);   // playback stays wired regardless of features
     }
+    return true;
+  } catch (e) {
+    showToast('Audio features unavailable: ' + e.message);
+    return false;
+  }
+}
+
+function ensureVizGraph() {
+  try {
+    if (!ensureAudioGraph()) return false;
     if (!visualizer) {
       visualizer = bcLib.createVisualizer(audioCtx, vizCanvas, {
         width: window.innerWidth,
@@ -1386,6 +1407,192 @@ document.addEventListener('click', e => {
     vizTapTimer = setTimeout(() => { vizTapTimer = null; toggleVizFullscreen(); }, 300);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Duck on talk (web port of the Android app's TalkMusicClassifier): near-mute
+// commercials/DJ talk, prompt restore when music returns. Classifier reads an
+// AnalyserNode tapped pre-gain at ~20 Hz; three features that survive FM
+// broadcast compression: bass-beat autocorrelation, sustained high-frequency
+// content, speech-band envelope burstiness. Asymmetric hysteresis: ~5 s of
+// talk before ducking (song outros must not duck), ~1.5 s of music to
+// restore. Per-band persistence; AM defaults off (ball games are talk you
+// WANT). Score readout lives in the button tooltip.
+// ---------------------------------------------------------------------------
+const DUCK_VOLUME = 0.07, DUCK_RAMP_S = 1.2, UNDUCK_RAMP_S = 0.25;
+const DUCK_MUSIC_TH = 0.55, DUCK_TALK_TH = 0.35;   // talk threshold low: quiet
+                                  // song verses (sparse mixes) must not duck
+const DUCK_MUSIC_HOLD_MS = 1500, DUCK_TALK_HOLD_MS = 8000;
+const DUCK_W_BEAT = 0.50, DUCK_W_HF = 0.30, DUCK_W_STEADY = 0.20;
+const DUCK_HF_FULL = 0.12, DUCK_CV_FULL = 0.60;
+const DUCK_FRAMES = 160;          // ~8 s of history at 20 Hz (duck decision)
+const DUCK_SHORT_FRAMES = 60;     // ~3 s (recovery decision — while ducked the
+                                  // long window is full of stale talk frames;
+                                  // scoring just the recent slice makes
+                                  // music-resume prompt instead of ~30 s)
+const DUCK_MIN_FRAMES = 80;       // ~4 s before the first verdict
+
+let duckOn = false;
+let duckAnalyser = null, duckBins = null, duckLut = null, duckTimer = null;
+let duckBandIdx = null;           // [bassLo,bassHi, midLo,midHi, highLo,highHi]
+let duckBass = [], duckMid = [], duckHigh = [];
+let duckTickCount = 0, duckState = 'music', duckScore = 0;
+let duckMusicRun = 0, duckTalkRun = 0, duckLastEval = 0;
+
+function duckPrefKey() { return currentBand === 'am' ? LS_DUCK_AM : LS_DUCK_FM; }
+
+function ensureDuckTap() {
+  if (!ensureAudioGraph()) return false;
+  if (!duckAnalyser) {
+    duckAnalyser = audioCtx.createAnalyser();
+    duckAnalyser.fftSize = 2048;
+    duckAnalyser.smoothingTimeConstant = 0;
+    mediaSrc.connect(duckAnalyser);            // pre-gain: full signal always
+    duckBins = new Uint8Array(duckAnalyser.frequencyBinCount);
+    // Byte values are dB-mapped; linearize once so band sums behave like energy.
+    duckLut = new Float32Array(256);
+    const dbMin = duckAnalyser.minDecibels, dbMax = duckAnalyser.maxDecibels;
+    for (let i = 1; i < 256; i++) {
+      duckLut[i] = Math.pow(10, (dbMin + (i / 255) * (dbMax - dbMin)) / 20);
+    }
+    const binHz = audioCtx.sampleRate / duckAnalyser.fftSize;
+    duckBandIdx = [
+      Math.max(1, Math.round(43 / binHz)),  Math.round(200 / binHz),    // bass
+      Math.round(300 / binHz),              Math.round(3400 / binHz),   // speech
+      Math.round(4000 / binHz),             Math.round(10800 / binHz),  // high
+    ];
+  }
+  return true;
+}
+
+function duckResetState() {
+  duckBass = []; duckMid = []; duckHigh = [];
+  duckTickCount = 0; duckState = 'music'; duckScore = 0;
+  duckMusicRun = 0; duckTalkRun = 0; duckLastEval = 0;
+}
+
+function duckButtonUI() {
+  const btn = $('duck-toggle');
+  btn.classList.toggle('on', duckOn);
+  btn.textContent = (duckOn && duckState === 'talk') ? 'DUCKED' : 'DUCK';
+  btn.title = duckOn
+    ? `Duck on talk — ${duckState} · score ${duckScore.toFixed(2)}`
+    : 'Duck on talk — near-mute commercials/DJ talk, prompt restore on music';
+}
+
+function duckApplyGain() {
+  if (!duckGain) return;
+  const target = (duckOn && duckState === 'talk') ? DUCK_VOLUME : 1;
+  const t = audioCtx.currentTime;
+  const g = duckGain.gain;
+  g.cancelScheduledValues(t);
+  g.setValueAtTime(g.value, t);
+  g.linearRampToValueAtTime(target, t + (target < 1 ? DUCK_RAMP_S : UNDUCK_RAMP_S));
+}
+
+function duckTick() {
+  if (!duckOn || !duckAnalyser || audio.paused) return;
+  duckAnalyser.getByteFrequencyData(duckBins);
+  let b = 0, m = 0, h = 0;
+  const [bL, bH, mL, mH, hL, hH] = duckBandIdx;
+  for (let i = bL; i <= bH; i++) b += duckLut[duckBins[i]];
+  for (let i = mL; i <= mH; i++) m += duckLut[duckBins[i]];
+  for (let i = hL; i <= hH; i++) h += duckLut[duckBins[i]];
+  duckBass.push(b); duckMid.push(m); duckHigh.push(h);
+  if (duckBass.length > DUCK_FRAMES) { duckBass.shift(); duckMid.shift(); duckHigh.shift(); }
+  if (++duckTickCount % 8 === 0 && duckBass.length >= DUCK_MIN_FRAMES) duckEvaluate();
+}
+
+function duckScoreWindow(start) {
+  const n = duckBass.length - start;
+
+  // Beat: normalized autocorrelation peak of the bass envelope, 0.25–0.8 s lags.
+  let meanBass = 0;
+  for (let i = start; i < duckBass.length; i++) meanBass += duckBass[i];
+  meanBass /= n;
+  let r0 = 1e-9;
+  for (let i = start; i < duckBass.length; i++) { const x = duckBass[i] - meanBass; r0 += x * x; }
+  let beat = 0;
+  for (let lag = 5; lag <= Math.min(16, n - 8); lag++) {
+    let r = 0;
+    for (let i = start; i < duckBass.length - lag; i++) {
+      r += (duckBass[i] - meanBass) * (duckBass[i + lag] - meanBass);
+    }
+    beat = Math.max(beat, r / r0);
+  }
+  beat = Math.min(1, Math.max(0, beat));
+
+  // Sustained HF content.
+  let hfRatio = 0;
+  for (let i = start; i < duckBass.length; i++) {
+    const t = duckBass[i] + duckMid[i] + duckHigh[i];
+    if (t > 1e-9) hfRatio += duckHigh[i] / t;
+  }
+  hfRatio /= n;
+  const hfScore = Math.min(1, hfRatio / DUCK_HF_FULL);
+
+  // Speech-band envelope steadiness (speech is bursty at syllable rate).
+  let meanMid = 0;
+  for (let i = start; i < duckMid.length; i++) meanMid += duckMid[i];
+  meanMid /= n;
+  let varMid = 0;
+  for (let i = start; i < duckMid.length; i++) { const d = duckMid[i] - meanMid; varMid += d * d; }
+  const cv = meanMid > 1e-9 ? Math.sqrt(varMid / n) / meanMid : 1;
+  const steady = Math.min(1, Math.max(0, 1 - cv / DUCK_CV_FULL));
+
+  return Math.min(1, Math.max(0, DUCK_W_BEAT * beat + DUCK_W_HF * hfScore + DUCK_W_STEADY * steady));
+}
+
+function duckEvaluate() {
+  // Long window decides ducking; short (recent) window decides recovery, so
+  // music-resume isn't dragged down by stale talk frames in the history.
+  duckScore = duckScoreWindow(0);
+  const shortScore = duckState === 'talk'
+    ? duckScoreWindow(Math.max(0, duckBass.length - DUCK_SHORT_FRAMES))
+    : duckScore;
+
+  // Hysteresis: slow into the duck, prompt out of it.
+  const now = Date.now();
+  const dt = duckLastEval ? Math.min(2000, now - duckLastEval) : 0;
+  duckLastEval = now;
+  duckMusicRun = shortScore >= DUCK_MUSIC_TH ? duckMusicRun + dt : 0;
+  duckTalkRun  = duckScore <= DUCK_TALK_TH   ? duckTalkRun + dt  : 0;
+  const prev = duckState;
+  if (duckState === 'talk'  && duckMusicRun >= DUCK_MUSIC_HOLD_MS) duckState = 'music';
+  if (duckState === 'music' && duckTalkRun  >= DUCK_TALK_HOLD_MS)  duckState = 'talk';
+  if (duckState !== prev) duckApplyGain();
+  duckButtonUI();
+}
+
+function updateDuckRunState() {
+  const run = duckOn && duckAnalyser && !audio.paused;
+  if (run && !duckTimer) duckTimer = setInterval(duckTick, 50);
+  else if (!run && duckTimer) { clearInterval(duckTimer); duckTimer = null; }
+}
+
+// Pure state flip — the tap is built at call sites that hold a user gesture
+// (the toggle) or a live stream (the 'playing' handler), same as VIZ.
+function setDuck(on, persist = true) {
+  duckOn = on;
+  if (persist) localStorage.setItem(duckPrefKey(), on ? '1' : '0');
+  duckResetState();
+  duckApplyGain();                 // restores gain to 1 on disable
+  duckButtonUI();
+  updateDuckRunState();
+}
+
+function applyDuckBandPref() {
+  setDuck(localStorage.getItem(duckPrefKey()) === '1', false);
+}
+
+$('duck-toggle').addEventListener('click', () => {
+  if (!duckOn && !duckAnalyser && !ensureDuckTap()) return;
+  setDuck(!duckOn);
+});
+audio.addEventListener('playing', () => {
+  if (duckOn && !duckAnalyser) ensureDuckTap();
+  updateDuckRunState();
+});
+audio.addEventListener('pause', updateDuckRunState);
 
 // ---------------------------------------------------------------------------
 // Toast
@@ -1534,6 +1741,7 @@ if (vizAvailable) {
   $('viz-toggle').style.display = '';
   applyVizBandPref();
 }
+applyDuckBandPref();   // visual state only — the tap builds on play/toggle
 $('wxsat-btn').addEventListener('click', authorizeWxsat);
 pollStations();
 pollNowPlaying();
