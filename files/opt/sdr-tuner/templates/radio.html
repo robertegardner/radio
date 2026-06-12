@@ -35,6 +35,18 @@
     user-select: none;
   }
 
+  /* Butterchurn visualizer: full-viewport canvas BEHIND the tuner UI. The
+     body's own background must go transparent while it's on — body paints
+     over its negative-z children (html's propagated gradient does not). */
+  #viz-canvas {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    z-index: -1;
+    display: none;
+    background: #000;
+  }
+  body.viz-on { background: transparent; }
+
   /* Album art in the LCD panel (layout C): a crisp cover tile beside the
      station info, plus a blurred wash of the same cover tinting the panel. */
   .art-wash {
@@ -410,6 +422,10 @@
 </head>
 <body>
 
+<!-- MilkDrop-style visualizer (Butterchurn). Sits behind the tuner UI;
+     hidden until the VIZ toggle turns it on. -->
+<canvas id="viz-canvas"></canvas>
+
 <div class="stereo">
   <!-- LCD display -->
   <div class="lcd" id="lcd">
@@ -460,6 +476,7 @@
       <button class="btn" id="seek-up"   title="Next station">»</button>
       <button class="btn" id="direct-tune-btn" title="Direct tune">⌨</button>
       <button class="btn" id="stations-btn" title="Browse stations">≡</button>
+      <button class="btn toggle" id="viz-toggle" title="Audio visualizer — tap the background for fullscreen, double-tap for next pattern" style="display:none">VIZ</button>
     </div>
     <div></div>
     <div class="ctrl-group">
@@ -506,7 +523,10 @@
   </div>
 </div>
 
-<audio id="audio" preload="none"></audio>
+<!-- crossorigin lets WebAudio analyze the stream for the visualizer. The
+     icecast proxy MUST send Access-Control-Allow-Origin (it does — Icecast
+     itself emits it); without that header the browser refuses to play. -->
+<audio id="audio" preload="none" crossorigin="anonymous"></audio>
 
 <!-- Direct tune modal -->
 <div class="modal-bg" id="direct-tune-modal">
@@ -542,6 +562,12 @@
 
 <div class="toast" id="toast"></div>
 
+<!-- Butterchurn (MilkDrop-style visualizer), vendored — no CDN at runtime.
+     If these fail to load the page still works: the VIZ button stays hidden. -->
+<script src="/static/butterchurn.min.js"></script>
+<script src="/static/butterchurnPresets.min.js"></script>
+<script src="/static/isSupported.min.js"></script>
+
 <script>
 'use strict';
 
@@ -554,6 +580,8 @@ const LS_VOL      = 'sdr-radio.vol';
 const LS_BAND     = 'sdr-radio.band';
 const LS_HD       = 'sdr-radio.hd';
 const LS_SUBCH    = 'sdr-radio.subch';
+const LS_VIZ_FM   = 'sdr-radio.viz.fm';
+const LS_VIZ_AM   = 'sdr-radio.viz.am';
 
 const $ = id => document.getElementById(id);
 const audio = $('audio');
@@ -673,6 +701,7 @@ async function tuneTo(freq, band, hd = false, subchannel = 0) {
     });
     const j = await r.json();
     if (!j.ok) throw new Error(j.error || 'tune failed');
+    const bandChanged  = band !== currentBand;
     currentFreq       = String(freq);
     currentBand       = band;
     currentHd         = hd;
@@ -683,6 +712,7 @@ async function tuneTo(freq, band, hd = false, subchannel = 0) {
     updateBandUI();
     updateHdUI();
     renderPresets();
+    if (bandChanged) applyVizBandPref();
     if (wasPlaying) {
       await waitForStream();
       $('stream-led').classList.remove('hd');
@@ -1036,6 +1066,7 @@ async function pollNowPlaying() {
   try {
     const d = await (await fetch('/api/now_playing')).json();
     if (d.freq && d.band) {
+      const bandChanged = d.band !== currentBand;
       const hdChanged = (!!d.hd !== currentHd || (d.subchannel || 0) !== currentSubchannel);
       const changed   = d.freq !== currentFreq || d.band !== currentBand || hdChanged;
       currentFreq       = d.freq;
@@ -1043,6 +1074,7 @@ async function pollNowPlaying() {
       currentHd         = !!d.hd;
       currentSubchannel = d.subchannel || 0;
       if (changed) { updateBandUI(); updateHdUI(); renderPresets(); }
+      if (bandChanged) applyVizBandPref();
     }
     // Frequency display
     if (currentFreq) {
@@ -1199,6 +1231,163 @@ async function authorizeWxsat() {
 }
 
 // ---------------------------------------------------------------------------
+// Butterchurn visualizer (renders entirely in this browser — zero Pi load).
+//
+// Audio graph: <audio> → MediaElementSource → destination (always, once the
+// graph exists) and → the visualizer. createMediaElementSource() may only be
+// called ONCE per element, ever — and once it exists the element plays
+// through the graph, so a suspended AudioContext mutes playback. The graph is
+// therefore built lazily on a user gesture (the VIZ toggle, or 'playing'
+// after a play click), and resume() runs on every 'playing' to self-heal.
+// ---------------------------------------------------------------------------
+const vizCanvas = $('viz-canvas');
+// These UMD bundles export directly or under .default depending on the build.
+const bcLib = window.butterchurn
+  && (window.butterchurn.default || window.butterchurn);
+const bcPresetsLib = window.butterchurnPresets
+  && (window.butterchurnPresets.getPresets ? window.butterchurnPresets : window.butterchurnPresets.default);
+const bcSupportCheck = window.isSupported
+  && (typeof window.isSupported === 'function' ? window.isSupported : window.isSupported.default);
+
+let vizAvailable = false;        // libs loaded + supported — decided once at init
+let vizOn = false;
+let audioCtx = null;
+let mediaSrc = null;             // the once-per-element MediaElementSource guard
+let visualizer = null;
+let vizPresetMap = null, vizPresetKeys = [], vizPresetCurrent = '';
+let vizRaf = null, vizPresetTimer = null, vizTapTimer = null;
+
+function vizPrefKey() { return currentBand === 'am' ? LS_VIZ_AM : LS_VIZ_FM; }
+
+function ensureVizGraph() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (!mediaSrc) {
+      mediaSrc = audioCtx.createMediaElementSource(audio);
+      mediaSrc.connect(audioCtx.destination);   // keep playback wired even with VIZ off
+    }
+    if (!visualizer) {
+      visualizer = bcLib.createVisualizer(audioCtx, vizCanvas, {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+      });
+      visualizer.connectAudio(mediaSrc);
+      vizPresetMap = bcPresetsLib.getPresets();
+      vizPresetKeys = Object.keys(vizPresetMap);
+      loadRandomVizPreset(0);
+      resizeViz();
+    }
+    return true;
+  } catch (e) {
+    // Playback survives: if the source node was created it's already wired to
+    // destination. Just retire the feature for this session.
+    vizAvailable = false;
+    vizOn = false;
+    vizCanvas.style.display = 'none';
+    document.body.classList.remove('viz-on');
+    $('viz-toggle').style.display = 'none';
+    updateVizRunState();
+    showToast('Visualizer unavailable: ' + e.message);
+    return false;
+  }
+}
+
+function loadRandomVizPreset(blendSec) {
+  if (!visualizer || !vizPresetKeys.length) return;
+  let key = vizPresetKeys[Math.floor(Math.random() * vizPresetKeys.length)];
+  if (vizPresetKeys.length > 1 && key === vizPresetCurrent) {
+    key = vizPresetKeys[(vizPresetKeys.indexOf(key) + 1) % vizPresetKeys.length];
+  }
+  vizPresetCurrent = key;
+  visualizer.loadPreset(vizPresetMap[key], blendSec);
+}
+
+function resizeViz() {
+  if (visualizer) visualizer.setRendererSize(window.innerWidth, window.innerHeight);
+}
+
+// Render only while there's something to show: VIZ on, tab visible, audio
+// playing. Everything else cancels the rAF loop and the preset rotation.
+function updateVizRunState() {
+  const run = vizOn && visualizer && !document.hidden && !audio.paused;
+  if (run && !vizRaf) {
+    const tick = () => { vizRaf = requestAnimationFrame(tick); visualizer.render(); };
+    vizRaf = requestAnimationFrame(tick);
+  } else if (!run && vizRaf) {
+    cancelAnimationFrame(vizRaf);
+    vizRaf = null;
+  }
+  if (run && !vizPresetTimer) {
+    vizPresetTimer = setInterval(() => loadRandomVizPreset(2.7), 30000);
+  } else if (!run && vizPresetTimer) {
+    clearInterval(vizPresetTimer);
+    vizPresetTimer = null;
+  }
+}
+
+// Pure state flip — graph creation happens at the call sites that hold a user
+// gesture (the toggle handler) or a live stream (the 'playing' handler).
+function setViz(on, persist = true) {
+  if (!vizAvailable) return;
+  vizOn = on;
+  vizCanvas.style.display = on ? 'block' : 'none';
+  document.body.classList.toggle('viz-on', on);
+  $('viz-toggle').classList.toggle('on', on);
+  if (persist) localStorage.setItem(vizPrefKey(), on ? '1' : '0');
+  updateVizRunState();
+}
+
+// Per-band preference: AM defaults off (mono talk is a boring input) but an
+// explicit AM enable sticks, independent of the FM choice.
+function applyVizBandPref() {
+  if (!vizAvailable) return;
+  setViz(localStorage.getItem(vizPrefKey()) === '1', false);
+}
+
+function toggleVizFullscreen() {
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) exit.call(document);
+  } else {
+    const req = vizCanvas.requestFullscreen || vizCanvas.webkitRequestFullscreen;
+    if (!req) return;                  // e.g. iOS Safari — no canvas fullscreen
+    const p = req.call(vizCanvas);
+    if (p && p.catch) p.catch(() => {});
+  }
+}
+
+$('viz-toggle').addEventListener('click', () => {
+  if (!vizOn && !visualizer && !ensureVizGraph()) return;
+  setViz(!vizOn);
+});
+audio.addEventListener('playing', () => {
+  if (vizOn && !visualizer) ensureVizGraph();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  updateVizRunState();
+});
+audio.addEventListener('pause', updateVizRunState);
+document.addEventListener('visibilitychange', updateVizRunState);
+window.addEventListener('resize', resizeViz);
+document.addEventListener('fullscreenchange', resizeViz);
+
+// Single tap on the visualizer (the canvas itself, or the empty page
+// background around the stereo) toggles fullscreen; double-tap/double-click
+// jumps to the next preset. The 300 ms timer disambiguates the two.
+document.addEventListener('click', e => {
+  if (!vizOn) return;
+  if (e.target !== vizCanvas && e.target !== document.body && e.target !== document.documentElement) return;
+  if (vizTapTimer) {
+    clearTimeout(vizTapTimer);
+    vizTapTimer = null;
+    loadRandomVizPreset(0);
+  } else {
+    vizTapTimer = setTimeout(() => { vizTapTimer = null; toggleVizFullscreen(); }, 300);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Toast
 // ---------------------------------------------------------------------------
 let toastTimer;
@@ -1334,6 +1523,17 @@ renderQuality();
 fetch('/api/status').then(r => r.json()).then(d => {
   if (d.bitrate) { currentBitrate = d.bitrate; renderQuality(); }
 }).catch(() => {});
+// Visualizer feature-gate: vendored libs present, butterchurn's own support
+// check, and a WebGL2 probe. Unsupported → the VIZ button never appears.
+try {
+  vizAvailable = !!(bcLib && bcPresetsLib
+    && (typeof bcSupportCheck === 'function' ? bcSupportCheck() : false)
+    && document.createElement('canvas').getContext('webgl2'));
+} catch (e) { vizAvailable = false; }
+if (vizAvailable) {
+  $('viz-toggle').style.display = '';
+  applyVizBandPref();
+}
 $('wxsat-btn').addEventListener('click', authorizeWxsat);
 pollStations();
 pollNowPlaying();
