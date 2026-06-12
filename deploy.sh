@@ -43,6 +43,10 @@ install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/index.html"   /o
 install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/wxsat.html"   /opt/sdr-tuner/templates/wxsat.html
 install -m 0644 -o radio -g radio "$SRC/opt/sdr-tuner/templates/multi.html"   /opt/sdr-tuner/templates/multi.html
 
+# Vendored client-side JS (Butterchurn visualizer) served by Flask at /static.
+install -d -m 0755 -o radio -g radio /opt/sdr-tuner/static
+install -m 0644 -o radio -g radio "$SRC"/opt/sdr-tuner/static/*.js            /opt/sdr-tuner/static/
+
 # FM-multistation units (opt-in; NOT started here — legacy mono stays default).
 install -m 0644 -o root -g root "$SRC/etc/systemd/system/sdr-iq-capture.service" /etc/systemd/system/sdr-iq-capture.service
 [[ -f "$SRC/etc/systemd/system/sdr-mux.service" ]] && \
