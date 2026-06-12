@@ -12,7 +12,25 @@ every time.
 > than none — it makes Claude confidently wrong. If a conversation ends with
 > "we decided X" or "I finished Y", that is the signal to update.
 
-Last meaningful update: 2026-06-09 — **FM stereo + multistation shipped** (radio
+Last meaningful update: 2026-06-12 — **Butterchurn (MilkDrop-style) visualizer
+shipped in the listener UI** (`/radio`). Client-side only: WebGL2 rendering in
+the listener's browser, zero new Pi load. Vendored bundles (butterchurn 2.6.7 +
+butterchurn-presets 2.4.7) live in `files/opt/sdr-tuner/static/` and are served
+by Flask at `/static`; the audio-graph + VIZ code is in `templates/radio.html`
+(one-time `createMediaElementSource`, always connected to destination,
+`resume()` self-heal on `playing`; VIZ toggle, 30 s preset rotation, tap =
+fullscreen / double-tap = next preset; per-band localStorage — AM defaults off).
+Two carry-overs for the platform V2 work: (1) **V2's listener UI must carry the
+same static assets and audio-graph code** when the radio moves to `.84`;
+(2) the `<audio>` element is now `crossorigin="anonymous"`, which only plays if
+`icecast.rg2.io` keeps serving `Access-Control-Allow-Origin` — that header
+comes from **Icecast itself** (the rack instance), proxied through NPMplus, so
+the V2 NPMplus config must preserve it and must NOT add its own copy (a
+duplicate header breaks CORS and the stream refuses to play). The native
+Android app is unaffected (it never renders radio.html); visuals there would
+be a separate radio-android feature (WebView on `/radio` or projectM-android).
+
+Prior: 2026-06-09 — **FM stereo + multistation shipped** (radio
 PR #6, merged to main), and **weather-satellite /wxsat shipped** (PR #5, merged).
 FM-multistation: a new opt-in mode captures raw 8 Msps IQ once (`iq_capture.py`,
 Antenna A) and demodulates several FM stations at once, each on its own Icecast
@@ -209,6 +227,10 @@ Cat 5 long-wire is up. Reference facts kept for any future rebuild:
 - **Admin UI** at `https://radio.rg2.io`, **stereo UI** at `/radio`. RFI
   banner added this session as a check-engine light for the noise-floor
   problem.
+- **Visualizer (`/radio`):** Butterchurn MilkDrop-style visuals behind the
+  tuner UI, shipped 2026-06-12. VIZ toggle (hidden when WebGL2 is missing),
+  renders entirely in the listener's browser. Requires the icecast CORS
+  header — see the carry-over notes at the top of this file.
 - **Scanner project:** skeleton repo only, build pending. Nooelec available
   for it.
 
