@@ -44,8 +44,19 @@ AUTH_PATH     = Path("/run/sdr-streams/wxsat_authorized.json")
 TIMESYNC_MARKER = Path("/run/systemd/timesync/synchronized")
 NOW_PLAYING_PATH = Path("/run/sdr-streams/now_playing.json")
 ACTIVE_ENV_PATH  = Path("/etc/sdr-streams/active.env")
-ICECAST_STATUS_URL = "http://localhost:8000/status-json.xsl"
+# The RACK Icecast (distribution LXC) — since the 2026-06-10 cutover every
+# real listener (web, Android, WiiM) connects there via NPM; the Pi's local
+# icecast only carries on-demand relays and sees nobody. Checking localhost
+# here silently broke skip-when-listening (always 0 -> capture despite
+# listeners).
+ICECAST_STATUS_URL = os.environ.get(
+    "WXSAT_ICECAST_STATUS", "http://192.168.6.82:8000/status-json.xsl")
 MOUNT = "fm.mp3"
+# fm-duck (the talk-ducked /fm-duck.mp3 relay on the distribution LXC) holds a
+# permanent connection to MOUNT. Its own mount being live in the same status
+# payload is the tell — count it as an internal consumer, or captures would
+# never run again.
+DUCK_MOUNT = "fm-duck.mp3"
 CAPTURE_SCRIPT = "/opt/sdr-tuner/wxsat_capture.sh"
 # The caption orchestrator pulls the Icecast mount back to PCM, so while it is
 # running it shows up as one Icecast listener. Discount that internal consumer
@@ -57,48 +68,56 @@ CAPTIONS_SERVICE = "sdr-captions"
 # Listener check (skip-when-listening)
 # ---------------------------------------------------------------------------
 def icecast_listeners():
-    """Return (listeners, ok). `ok` is False if the status query itself failed
-    — callers default to capturing in that case rather than blocking a pass."""
+    """Return (listeners, duck_relay_live, ok). `ok` is False if the status
+    query itself failed — callers default to capturing in that case rather
+    than blocking a pass. `duck_relay_live` is True when the fm-duck relay's
+    own mount is up, which means it holds one connection to MOUNT."""
     try:
         r = requests.get(ICECAST_STATUS_URL, timeout=5)
         r.raise_for_status()
         src = r.json().get("icestats", {}).get("source")
         if src is None:
-            return 0, True
+            return 0, False, True
         # Icecast emits a single object for one mount, a list for several.
         sources = src if isinstance(src, list) else [src]
+        listeners = 0
+        duck_live = False
         for s in sources:
             url = str(s.get("listenurl", ""))
-            if url.endswith("/" + MOUNT) or url.endswith(MOUNT):
+            if url.endswith("/" + DUCK_MOUNT):
+                duck_live = True
+            elif url.endswith("/" + MOUNT) or url.endswith(MOUNT):
                 try:
-                    return int(s.get("listeners", 0) or 0), True
+                    listeners = int(s.get("listeners", 0) or 0)
                 except (TypeError, ValueError):
-                    return 0, True
-        # Our mount isn't live (stream down?) → nobody listening to it.
-        return 0, True
+                    listeners = 0
+        return listeners, duck_live, True
     except (requests.RequestException, json.JSONDecodeError, ValueError) as e:
         log.warning("listener check failed (%s) — defaulting to capture", e)
-        return 0, False
+        return 0, False, False
 
 
-def internal_consumers():
-    """Count our own non-human consumers of the mount. The caption orchestrator
-    holds one connection whenever sdr-captions is running."""
+def internal_consumers(duck_relay_live):
+    """Count our own non-human consumers of the mount: the caption
+    orchestrator while sdr-captions runs, and the fm-duck relay while its
+    mount is live on the rack."""
+    n = 1 if duck_relay_live else 0
     try:
         active = subprocess.run(["systemctl", "is-active", CAPTIONS_SERVICE],
                                 capture_output=True, text=True).stdout.strip()
-        return 1 if active == "active" else 0
+        n += 1 if active == "active" else 0
     except OSError:
-        return 0
+        pass
+    return n
 
 
 def human_listeners():
     """(human_listeners, ok) — raw Icecast listeners minus our internal
     consumers. ok=False if the status query failed (callers then capture)."""
-    raw, ok = icecast_listeners()
+    raw, duck_live, ok = icecast_listeners()
     if not ok:
         return 0, False
-    internal = internal_consumers()
+    internal = internal_consumers(duck_live)
     effective = max(0, raw - internal)
     log.info("listeners: raw=%d internal=%d human=%d", raw, internal, effective)
     return effective, True
