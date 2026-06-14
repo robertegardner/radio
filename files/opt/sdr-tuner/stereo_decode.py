@@ -120,6 +120,17 @@ def main() -> int:
     ap.add_argument("--pilot-floor", type=float, default=0.003,
                     help="pilot RMS at/below which output is fully mono; the "
                          "blend ramps to full stereo by ~3x this. Default 0.003")
+    ap.add_argument("--in-format", choices=("f32", "s16le"), default="f32",
+                    help="input MPX sample format. f32 = the csdr/multistation path "
+                         "(default). s16le = the rack single-station path "
+                         "(wbfm_stream.py emits s16le MPX; scaled by /32768 to ~unit "
+                         "amplitude, matching csdr's float output).")
+    ap.add_argument("--out-format", choices=("s16le", "f32le"), default="s16le",
+                    help="output STEREO sample format. s16le (default) hard-clips at "
+                         "+-1.0 before quantizing — fine when ffmpeg de-emphasis runs "
+                         "AFTER (mux path). f32le emits unclipped float so the loud "
+                         "PRE-emphasis peaks survive into ffmpeg's float de-emphasis + "
+                         "limiter (rack path: prevents int16 clipping on loud peaks).")
     args = ap.parse_args()
 
     fir_pilot = Fir(TAPS_PILOT)
@@ -136,7 +147,9 @@ def main() -> int:
     # enough for low latency. stdin may hand us short reads; loop until we have
     # a whole block or EOF.
     BLOCK = 8192
-    nbytes = BLOCK * 4
+    bps = 2 if args.in_format == "s16le" else 4   # bytes per input MPX sample
+    nbytes = BLOCK * bps
+    out_f32 = args.out_format == "f32le"
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
 
@@ -149,12 +162,15 @@ def main() -> int:
         if not raw:
             break
         if len(raw) < nbytes:
-            # final partial block — pad to a whole number of float32
-            usable = (len(raw) // 4) * 4
+            # final partial block — trim to a whole number of input samples
+            usable = (len(raw) // bps) * bps
             if usable == 0:
                 break
             raw = raw[:usable]
-        mpx = np.frombuffer(raw, dtype=np.float32)
+        if bps == 2:
+            mpx = np.frombuffer(raw, dtype="<i2").astype(np.float32) / np.float32(32768.0)
+        else:
+            mpx = np.frombuffer(raw, dtype=np.float32)
 
         pilot = fir_pilot(mpx)
         # coherent 38 kHz carrier from the squared pilot, normalized to ~unit amp
@@ -183,19 +199,29 @@ def main() -> int:
         inter = np.empty(left.size * 2, dtype=np.float32)
         inter[0::2] = left
         inter[1::2] = right
-        np.clip(inter, -1.0, 1.0, out=inter)
-        pcm = (inter * 32767.0).astype("<i2")
-        stdout.write(pcm.tobytes())
+
+        # Running true peak across ALL blocks (not just the sampled one) so the
+        # telemetry can't under-report clipping risk.
+        peak_out = max(peak_out, float(np.abs(inter).max()))
+
+        if out_f32:
+            # Unclipped float — loud pre-emphasis peaks survive into ffmpeg's float
+            # de-emphasis + limiter instead of being hard-clipped here.
+            stdout.write(inter.astype("<f4").tobytes())
+        else:
+            np.clip(inter, -1.0, 1.0, out=inter)
+            stdout.write((inter * 32767.0).astype("<i2").tobytes())
         stdout.flush()
 
         blocks += 1
         if blocks % 300 == 0:  # ~10 s: level telemetry for tuning the gate/scale
-            peak_out = float(np.abs(inter).max())
             sys.stderr.write(
                 f"stereo_decode: pilot_rms={float(pilot_lvl):.4f} blend={blend:.2f} "
-                f"out_peak={peak_out:.3f} (scale={float(scale):.1f})\n"
+                f"peak_out_max={peak_out:.3f} (scale={float(scale):.1f}, "
+                f"{'f32' if out_f32 else 's16'})\n"
             )
             sys.stderr.flush()
+            peak_out = 0.0  # reset window
 
     return 0
 
