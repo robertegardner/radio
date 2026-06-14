@@ -481,6 +481,7 @@ def api_now_playing():
         "band":           band,
         "hd":             is_hd,
         "subchannel":     subchannel,
+        "fcc_override":   bool(freq) and station_db.has_override(band, freq),
         "stereo":         current_stereo(),
         "antenna":        current_antenna(),
         "hd_probing":     hd_state.get("hd_probing", False),
@@ -499,6 +500,28 @@ def api_now_playing():
             "index": cap.get("lyrics_index", -1),
         },
     })
+
+
+@app.route("/api/station-override", methods=["POST"])
+def api_station_override():
+    """Pin (or clear) a hand-corrected station name for a frequency. RDS PS / FCC
+    data are often wrong — this wins over both in the UI. Empty name clears it.
+    No stream restart: just rewrites overrides.json and reloads station_db."""
+    payload = request.get_json(silent=True) or {}
+    band = payload.get("band", "fm")
+    freq = payload.get("freq")
+    if band not in ("fm", "am") or not freq:
+        return jsonify({"ok": False, "error": "band (fm|am) and freq required"}), 400
+    try:
+        info = station_db.set_override(
+            band, freq,
+            str(payload.get("name", "")).strip(),
+            str(payload.get("city", "")).strip(),
+            str(payload.get("state", "")).strip(),
+        )
+    except (ValueError, OSError) as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "band": band, "freq": freq, "override": info})
 
 
 @app.route("/api/stations")
