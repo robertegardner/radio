@@ -263,6 +263,23 @@
   /* Volume */
   .vol-wrap { display: flex; align-items: center; gap: .5rem; }
   .vol-label { font-size: 1.1rem; color: var(--text-dim); }
+  /* L/R level meters */
+  .levels { display: flex; gap: 3px; align-items: flex-end; height: 30px; }
+  .lvl-ch {
+    position: relative; width: 7px; height: 24px; border-radius: 2px;
+    background: var(--bg-raise, #1a1d22); overflow: hidden;
+    display: flex; align-items: flex-end;
+  }
+  .lvl-ch .lvl-fill {
+    display: block; width: 100%; height: 0%;
+    background: linear-gradient(to top, var(--green, #6df09b) 0%, var(--green, #6df09b) 70%, var(--amber, #ffae3a) 90%, var(--red, #f06d6d) 100%);
+    transition: height .05s linear;
+  }
+  .lvl-ch .lvl-tag {
+    position: absolute; bottom: -12px; left: 0; right: 0; text-align: center;
+    font-size: .5rem; color: var(--text-faint); line-height: 1;
+  }
+  .levels.mono #lvl-r { display: none; }
   input[type=range] {
     -webkit-appearance: none; appearance: none;
     width: 120px; height: 6px;
@@ -500,6 +517,10 @@
       <div class="vol-wrap">
         <span class="vol-label" id="vol-icon">🔊</span>
         <input type="range" id="vol" min="0" max="100" value="80">
+        <div class="levels" id="levels" title="L/R audio levels">
+          <div class="lvl-ch" id="lvl-l"><span class="lvl-fill"></span><span class="lvl-tag">L</span></div>
+          <div class="lvl-ch" id="lvl-r"><span class="lvl-fill"></span><span class="lvl-tag">R</span></div>
+        </div>
       </div>
     </div>
   </div>
@@ -901,6 +922,7 @@ function playStream() {
   if (p && p.catch) {
     p.catch(() => { if (isPlaying) scheduleReconnect(); });
   }
+  startLevels();   // first play is a user gesture → AudioContext resumes cleanly
 }
 
 function pauseStream() {
@@ -910,6 +932,7 @@ function pauseStream() {
   $('play-btn').textContent = '▶';
   $('stream-led').classList.remove('on');
   $('stream-led').classList.remove('err');
+  stopLevels();
 }
 
 function scheduleReconnect() {
@@ -1364,6 +1387,47 @@ function ensureAudioGraph() {
     showToast('Audio features unavailable: ' + e.message);
     return false;
   }
+}
+
+// L/R level meters: tap mediaSrc -> ChannelSplitter -> per-channel analysers.
+let lvlSplitter = null, lvlAnalyserL = null, lvlAnalyserR = null, levelsRaf = null;
+function ensureLevelsMeter() {
+  if (!ensureAudioGraph()) return false;
+  if (!lvlSplitter) {
+    lvlSplitter = audioCtx.createChannelSplitter(2);
+    lvlAnalyserL = audioCtx.createAnalyser(); lvlAnalyserL.fftSize = 256;
+    lvlAnalyserR = audioCtx.createAnalyser(); lvlAnalyserR.fftSize = 256;
+    mediaSrc.connect(lvlSplitter);            // extra tap; playback path unchanged
+    lvlSplitter.connect(lvlAnalyserL, 0);
+    lvlSplitter.connect(lvlAnalyserR, 1);
+  }
+  return true;
+}
+function lvlRms(buf) {
+  let s = 0;
+  for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; s += v * v; }
+  return Math.sqrt(s / buf.length);
+}
+function setLvlFill(id, rms) {
+  const fill = document.querySelector('#' + id + ' .lvl-fill');
+  if (fill) fill.style.height = Math.min(100, rms * 180).toFixed(0) + '%';   // ~2x gain for visibility
+}
+function startLevels() {
+  if (!ensureLevelsMeter() || levelsRaf) return;
+  const bufL = new Uint8Array(lvlAnalyserL.fftSize), bufR = new Uint8Array(lvlAnalyserR.fftSize);
+  const loop = () => {
+    levelsRaf = requestAnimationFrame(loop);
+    const stereo = currentStereo && currentBand === 'fm';
+    $('levels').classList.toggle('mono', !stereo);
+    lvlAnalyserL.getByteTimeDomainData(bufL);
+    setLvlFill('lvl-l', lvlRms(bufL));
+    if (stereo) { lvlAnalyserR.getByteTimeDomainData(bufR); setLvlFill('lvl-r', lvlRms(bufR)); }
+  };
+  loop();
+}
+function stopLevels() {
+  if (levelsRaf) { cancelAnimationFrame(levelsRaf); levelsRaf = null; }
+  setLvlFill('lvl-l', 0); setLvlFill('lvl-r', 0);
 }
 
 function ensureVizGraph() {
