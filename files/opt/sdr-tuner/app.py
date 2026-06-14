@@ -525,14 +525,22 @@ def api_tune():
         subchannel = 0
     if not freq:
         return jsonify({"ok": False, "error": "missing freq"}), 400
+    # Optional per-preset audio settings: persist BEFORE write_env so it picks them
+    # up — recalling a preset (freq + stereo + antenna) is then ONE restart, not
+    # three. Omitted keys leave the current setting untouched (back-compat).
     try:
+        if "stereo" in payload:
+            ui_settings.save({"stereo": bool(payload.get("stereo"))})
+        if payload.get("antenna") in ALLOWED_ANTENNAS:
+            ui_settings.save({"antenna": payload["antenna"]})
         write_env(str(freq), band, hd, subchannel)
     except OSError as e:
         app.logger.error("api_tune write_env failed: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
     clear_runtime_state()
     sysctl("restart")
-    return jsonify({"ok": True, "freq": freq, "band": band, "hd": hd, "subchannel": subchannel})
+    return jsonify({"ok": True, "freq": freq, "band": band, "hd": hd, "subchannel": subchannel,
+                    "stereo": current_stereo(), "antenna": current_antenna()})
 
 
 @app.route("/api/bitrate", methods=["POST"])

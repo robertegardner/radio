@@ -600,6 +600,8 @@ let presets    = loadPresets();
 let isPlaying  = false;
 let modalBand  = 'fm';
 let currentBitrate = '128k';   // reflects server state; set from /api/status
+let currentStereo  = true;     // reflects server state; from /api/now_playing
+let currentAntenna = 'Antenna A';
 let currentArtUrl  = '';       // album-art currently shown (proxy URL key)
 let directTuneBand = currentBand;
 
@@ -638,7 +640,8 @@ function renderPresets() {
     `;
     btn.addEventListener('click', () => {
       if (btn.dataset.suppressClick) { delete btn.dataset.suppressClick; return; }
-      if (p) tuneTo(p.freq, p.band, !!p.hd, p.subchannel || 0);
+      if (p) tuneTo(p.freq, p.band, !!p.hd, p.subchannel || 0,
+                    (typeof p.stereo === 'boolean' ? p.stereo : null), p.antenna || null);
       else   savePresetSlot(i);
     });
     btn.addEventListener('contextmenu', e => { e.preventDefault(); savePresetSlot(i); });
@@ -665,10 +668,12 @@ function savePresetSlot(slot) {
     ? (found.call || found.ps)
     : (currentBand.toUpperCase() + ' ' + formatFreq(currentFreq, currentBand));
   if (currentHd) label += ' HD' + (currentSubchannel + 1);
-  presets[slot] = { freq: currentFreq, band: currentBand, hd: currentHd, subchannel: currentSubchannel, label };
+  presets[slot] = { freq: currentFreq, band: currentBand, hd: currentHd, subchannel: currentSubchannel,
+                    stereo: currentStereo, antenna: currentAntenna, label };
   savePresets();
   renderPresets();
-  showToast(`Saved to preset ${slot + 1}: ${label}`);
+  const ant = currentBand === 'fm' ? ` · ${currentAntenna.slice(-1)}${currentStereo ? '' : '·mono'}` : '';
+  showToast(`Saved to preset ${slot + 1}: ${label}${ant}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +694,7 @@ function formatFreq(freq, band, hd, subchannel) {
 // ---------------------------------------------------------------------------
 // Tune
 // ---------------------------------------------------------------------------
-async function tuneTo(freq, band, hd = false, subchannel = 0) {
+async function tuneTo(freq, band, hd = false, subchannel = 0, stereo = null, antenna = null) {
   const dispLabel = hd
     ? `${band.toUpperCase()} ${Number(freq).toFixed(1)} HD${subchannel + 1}`
     : `${band.toUpperCase()} ${formatFreq(freq, band)}`;
@@ -699,10 +704,15 @@ async function tuneTo(freq, band, hd = false, subchannel = 0) {
   // Show amber immediately so there's always visual feedback during a tune.
   $('stream-led').classList.add('hd');
   try {
+    // Carry per-preset stereo/antenna so recall is one restart. Omitted (null) =
+    // leave the current setting (manual tunes / old presets without these fields).
+    const body = {freq, band, hd, subchannel};
+    if (stereo !== null) body.stereo = stereo;
+    if (antenna) body.antenna = antenna;
     const r = await fetch('/api/tune', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({freq, band, hd, subchannel}),
+      body: JSON.stringify(body),
     });
     const j = await r.json();
     if (!j.ok) throw new Error(j.error || 'tune failed');
@@ -1083,12 +1093,14 @@ async function pollNowPlaying() {
     }
     // MONO toggle reflects server state (on = mono); FM-only.
     if (typeof d.stereo === 'boolean') {
+      currentStereo = d.stereo;
       const mb = $('mono-toggle');
       mb.classList.toggle('on', !d.stereo);
       mb.disabled = (currentBand !== 'fm');
     }
     // Antenna A/B/C cycle reflects server state; FM-only.
     if (d.antenna) {
+      currentAntenna = d.antenna;
       const ab = $('ant-toggle');
       const letter = d.antenna.slice(-1);            // 'A' | 'B' | 'C'
       ab.textContent = 'ANT ' + letter;
