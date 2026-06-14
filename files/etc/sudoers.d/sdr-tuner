@@ -14,3 +14,8 @@ radio ALL=(root) NOPASSWD: /usr/bin/systemctl restart sdr-iq-capture
 radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-mux
 radio ALL=(root) NOPASSWD: /usr/bin/systemctl stop    sdr-mux
 radio ALL=(root) NOPASSWD: /usr/bin/systemctl restart sdr-mux
+# V2 (2026-06-14 cutover): the dx-R2 is served to the rack by sdr-source@dx-r2.
+# wxsat_capture.sh must stop it to borrow the device for a pass, then restart it.
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl stop    sdr-source@dx-r2
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl start   sdr-source@dx-r2
+radio ALL=(root) NOPASSWD: /usr/bin/systemctl restart sdr-source@dx-r2

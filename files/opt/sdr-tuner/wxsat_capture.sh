@@ -101,6 +101,7 @@ cleanup() {
   if [[ "$KEEP_IQ" != "1" ]]; then
     rm -f "$IQ"
   fi
+  sudo /usr/bin/systemctl start sdr-source@dx-r2 >/dev/null 2>&1 || true
   sudo /usr/bin/systemctl start sdr-fm@active >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
@@ -154,7 +155,12 @@ echo "wxsat: stopping stream for a ${DUR}s capture on ${FREQ_MHZ} MHz / ${ANTENN
 # engaging multistation after a pass is a manual choice.
 sudo /usr/bin/systemctl stop sdr-mux 2>/dev/null || true
 sudo /usr/bin/systemctl stop sdr-iq-capture 2>/dev/null || true
-sudo /usr/bin/systemctl stop sdr-fm@active
+sudo /usr/bin/systemctl stop sdr-fm@active 2>/dev/null || true
+# V2 (2026-06-14 cutover): the dx-R2 is held by the SoapyRemote SOURCE SERVER
+# (sdr-source@dx-r2) serving the rack FM — NOT a local sdr-fm@active (masked on
+# the Pi now). Stop it too or rx_sdr below hits a busy device. The post-capture
+# restart + cleanup trap bring it back; .84's sdr-fm@active then reconnects.
+sudo /usr/bin/systemctl stop sdr-source@dx-r2 2>/dev/null || true
 sleep 5   # let the SDRplay API release the RSP before we grab it (Phase-0 lesson)
 
 # Record IQ for the pass. `timeout` ends rx_sdr at the deadline → exit 124,
@@ -172,7 +178,11 @@ if [[ ! -s "$IQ" ]]; then
 fi
 
 # Decoding is offline and does NOT need the SDR — restart the stream now so the
-# radio is down only for the capture window, not the (longer) decode.
+# radio is down only for the capture window, not the (longer) decode. V2: bring
+# the SOURCE SERVER back (the rack's sdr-fm@active reconnects to it); the local
+# sdr-fm@active start is a harmless no-op while it's masked on the Pi.
+sleep 3   # let the SDRplay API release the RSP after rx_sdr before reopening
+sudo /usr/bin/systemctl start sdr-source@dx-r2 >/dev/null 2>&1 || true
 sudo /usr/bin/systemctl start sdr-fm@active >/dev/null 2>&1 || true
 
 # Try the primary symbol rate; on no-sync, retry the fallback rate before giving
