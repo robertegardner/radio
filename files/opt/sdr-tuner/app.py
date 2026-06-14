@@ -35,6 +35,14 @@ WXSAT_PASSES_PATH   = Path("/run/sdr-streams/wxsat_passes.json")
 WXSAT_STATUS_PATH   = Path("/run/sdr-streams/wxsat_status.json")
 WXSAT_AUTH_PATH     = Path("/run/sdr-streams/wxsat_authorized.json")
 WXSAT_LIVE_PATH     = Path("/run/sdr-streams/wxsat_live.json")
+# wxsat is radio-domain but inherently Pi-side: the scheduler needs the SDR, so
+# the capture products + captures.json only ever exist on the Pi. The rack tuner
+# (.84, the public radio.rg2.io backend) has no captures of its own, so set
+# WXSAT_UPSTREAM to the Pi tuner (e.g. http://192.168.6.18:8080) and every
+# /api/wxsat/* call is proxied there — display, image bytes, and the mutate
+# routes (delete/rebuild, which MUST run on the Pi where the IQ + satdump live).
+# Unset on the Pi itself, where these routes serve local files directly.
+WXSAT_UPSTREAM      = os.environ.get("WXSAT_UPSTREAM", "").rstrip("/")
 
 SERVICE          = "sdr-fm@active"
 SCAN_FM_SERVICE  = "sdr-scan.service"
@@ -66,6 +74,34 @@ def current_bitrate() -> str:
     return br if br in ALLOWED_BITRATES else DEFAULT_BITRATE
 
 app = Flask(__name__)
+
+
+@app.before_request
+def _wxsat_upstream_proxy():
+    """On the rack tuner (.84), proxy every /api/wxsat/* call to the Pi tuner.
+
+    The wxsat captures live only on the Pi (see WXSAT_UPSTREAM). The /wxsat page
+    HTML is served locally from the identical template; only its data + product
+    images are remote. Returns a Response to short-circuit the local route, or
+    None to let local handling proceed (Pi, or any non-wxsat path)."""
+    if not WXSAT_UPSTREAM or not request.path.startswith("/api/wxsat/"):
+        return None
+    try:
+        upstream = requests.request(
+            method=request.method,
+            url=WXSAT_UPSTREAM + request.full_path.rstrip("?"),
+            data=request.get_data(),
+            headers={k: v for k, v in request.headers if k.lower() != "host"},
+            timeout=30,
+            stream=True,
+        )
+    except requests.RequestException as e:
+        return jsonify({"ok": False, "error": f"wxsat upstream unreachable: {e}"}), 502
+    # Drop hop-by-hop / length headers — Flask re-derives them for the new body.
+    drop = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+    headers = [(k, v) for k, v in upstream.raw.headers.items() if k.lower() not in drop]
+    return Response(upstream.iter_content(chunk_size=65536),
+                    status=upstream.status_code, headers=headers)
 
 
 # ---------------------------------------------------------------------------
