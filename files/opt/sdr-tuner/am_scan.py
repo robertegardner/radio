@@ -156,44 +156,58 @@ def main():
     ap.add_argument("--threshold-db", default=10,  type=float)
     ap.add_argument("--settle-ms",    default=300, type=int)
     ap.add_argument("--dwell-ms",     default=500, type=int)
+    ap.add_argument("--antennas", default="Antenna C",
+                    help="comma-separated antenna ports to sweep (AM is normally the "
+                         "long-wire on Antenna C). >1 records the best antenna per station.")
     ap.add_argument("--out", default="/var/lib/sdr-streams/stations_am.json")
     args = ap.parse_args()
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    antennas = [a.strip() for a in args.antennas.split(",") if a.strip()]
+    print(f"[scan] AM scan: {FIRST_CHAN_HZ//1000}–{LAST_CHAN_HZ//1000} kHz, gain {args.gain}, "
+          f"antennas={antennas}", file=sys.stderr)
 
-    print(f"[scan] AM scan: {FIRST_CHAN_HZ//1000}–{LAST_CHAN_HZ//1000} kHz, "
-          f"gain {args.gain}, FFT {FFT_SIZE} pts ({SAMP_RATE/FFT_SIZE:.0f} Hz/bin)",
-          file=sys.stderr)
+    per_ant = {}   # antenna -> {freq_hz: snr_db}
+    for ant in antennas:
+        print(f"[scan] sweeping AM on {ant!r}", file=sys.stderr)
+        meas = measure_band(args.gain, args.settle_ms, args.dwell_ms, antenna=ant)
+        if not meas:
+            print(f"[scan] {ant}: no measurements", file=sys.stderr)
+            continue
+        noise = statistics.median(meas.values())
+        print(f"[scan] {ant}: noise floor ~{noise:.1f} dB", file=sys.stderr)
+        per_ant[ant] = {f: db - noise for f, db in meas.items()}
 
-    measurements = measure_band(args.gain, args.settle_ms, args.dwell_ms)
-
-    if not measurements:
-        print("[scan] no measurements collected", file=sys.stderr)
+    if not per_ant:
+        print("[scan] no measurements collected on any antenna", file=sys.stderr)
         sys.exit(1)
 
-    db_values = list(measurements.values())
-    noise = statistics.median(db_values)
-    print(f"[scan] {len(measurements)} channels measured, "
-          f"noise floor ~{noise:.1f} dB", file=sys.stderr)
-
     stations = []
-    for freq_hz, db in measurements.items():
-        snr = db - noise
-        if snr >= args.threshold_db:
-            stations.append({
-                "freq_khz": freq_hz // 1000,
-                "snr_db":   round(snr, 1),
-                "power_db": round(db, 1),
-            })
+    for freq_hz in channels():
+        by_ant, best_ant, best_snr = {}, None, -1e9
+        for ant in antennas:
+            snr = per_ant.get(ant, {}).get(freq_hz)
+            if snr is None:
+                continue
+            by_ant[ant.split()[-1]] = round(snr, 1)
+            if snr > best_snr:
+                best_snr, best_ant = snr, ant
+        if best_ant is None or best_snr < args.threshold_db:
+            continue
+        entry = {"freq_khz": freq_hz // 1000, "snr_db": round(best_snr, 1), "antenna": best_ant}
+        if len(antennas) > 1:
+            entry["by_antenna"] = by_ant
+        stations.append(entry)
 
     stations.sort(key=lambda s: -s["snr_db"])
     out = {
-        "scanned_at":     datetime.now().isoformat(timespec="seconds"),
-        "noise_floor_db": round(noise, 1),
-        "stations":       stations,
+        "scanned_at": datetime.now().isoformat(timespec="seconds"),
+        "antennas":   antennas,
+        "stations":   stations,
     }
     Path(args.out).write_text(json.dumps(out, indent=2))
-    print(f"[scan] wrote {len(stations)} stations to {args.out}", file=sys.stderr)
+    print(f"[scan] wrote {len(stations)} stations ({len(antennas)} antenna(s)) to {args.out}",
+          file=sys.stderr)
 
 
 if __name__ == "__main__":
