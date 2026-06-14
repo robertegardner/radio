@@ -337,6 +337,10 @@
   .modal-row .name { color: var(--text); font-size: .85rem; }
   .modal-row .city { color: var(--text-dim); font-size: .75rem; }
   .modal-row .snr  { color: var(--text-dim); font-size: .75rem; font-family: 'Courier New', monospace; }
+  .modal-row .antbadge {
+    display: inline-block; margin-left: .35rem; padding: .05rem .3rem; border-radius: 4px;
+    background: rgba(255,174,58,.15); color: var(--amber); font-size: .7rem; font-weight: 600;
+  }
   .modal-row.hd-row {
     padding-left: 1.75rem;
     background: rgba(255,174,58,.03);
@@ -1051,10 +1055,12 @@ function renderStationsModal() {
         <span class="name">${s.call || s.ps || '—'}</span>
         ${s.city ? `<span class="city">${s.city}${s.state ? ', ' + s.state : ''}</span>` : ''}
       </div>
-      <span class="snr">${s.snr_db != null ? s.snr_db + ' dB' : ''}</span>
+      <span class="snr">${s.snr_db != null ? s.snr_db + ' dB' : ''}${
+        s.antenna ? ` <span class="antbadge" title="best antenna from scan">ANT ${s.antenna.slice(-1)}</span>` : ''}</span>
     `;
     row.addEventListener('click', () => {
-      tuneTo(f, modalBand, false, 0);
+      // Auto-select the best antenna found by the all-antenna scan (FM only).
+      tuneTo(f, modalBand, false, 0, null, modalBand === 'fm' ? (s.antenna || null) : null);
       $('stations-modal').classList.remove('show');
     });
     target.appendChild(row);
