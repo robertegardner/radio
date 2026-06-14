@@ -21,6 +21,22 @@ CHAN_STEP  = 0.2e6
 SAMP_RATE  = 250_000   # 250 kHz → ~200 kHz IF bandwidth; limits window to ≈1 FM channel width
 
 
+SRC_ENV = Path("/etc/radio-compute/source-dx-r2.env")
+
+
+def device_args() -> str:
+    """SoapySDR device args. On the rack (radio-compute) the dx-R2 is REMOTE —
+    read SOAPY_ARGS (driver=remote,...,remote:driver=sdrplay) from the source env.
+    On the Pi (file absent) fall back to the local driver=sdrplay. One script,
+    both tiers — the rack has no local SDR so a hardcoded driver=sdrplay fails."""
+    if SRC_ENV.exists():
+        for line in SRC_ENV.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("SOAPY_ARGS="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return "driver=sdrplay"
+
+
 def channels():
     f = FIRST_CHAN
     while f <= LAST_CHAN + 1e3:
@@ -34,13 +50,17 @@ def measure_band(gain: float, settle_ms: int, dwell_ms: int,
     settle_s = settle_ms / 1000.0
     dwell_s  = dwell_ms  / 1000.0
 
-    sdr = SoapySDR.Device(SoapySDR.KwargsFromString("driver=sdrplay"))
+    dev_args = device_args()
+    sdr = SoapySDR.Device(SoapySDR.KwargsFromString(dev_args))
     sdr.setAntenna(SoapySDR.SOAPY_SDR_RX, 0, antenna)
     sdr.setGainMode(SoapySDR.SOAPY_SDR_RX, 0, False)   # disable AGC
     sdr.setGain(SoapySDR.SOAPY_SDR_RX, 0, float(gain))
     sdr.setSampleRate(SoapySDR.SOAPY_SDR_RX, 0, SAMP_RATE)
 
-    rxStream = sdr.setupStream(SoapySDR.SOAPY_SDR_RX, SoapySDR.SOAPY_SDR_CF32)
+    # Remote dx-R2: force the IQ onto lossless TCP (SoapyRemote's UDP firehose
+    # drops datagrams). Harmless/ignored on a local open.
+    stream_args = {"remote:prot": "tcp"} if "remote" in dev_args else {}
+    rxStream = sdr.setupStream(SoapySDR.SOAPY_SDR_RX, SoapySDR.SOAPY_SDR_CF32, [0], stream_args)
     sdr.activateStream(rxStream)
 
     buf_len   = 4096

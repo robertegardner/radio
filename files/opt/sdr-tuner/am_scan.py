@@ -22,6 +22,20 @@ SAMP_RATE       = 1_000_000   # 1 MSps → 2 MSps hardware (2× oversampling, dx
 FFT_SIZE        = 4096         # frequency resolution = SAMP_RATE / FFT_SIZE ≈ 244 Hz/bin
 
 
+SRC_ENV = Path("/etc/radio-compute/source-dx-r2.env")
+
+
+def device_args() -> str:
+    """SoapySDR device args: REMOTE (driver=remote) from the rack source env if
+    present, else local driver=sdrplay (the Pi). The rack has no local SDR."""
+    if SRC_ENV.exists():
+        for line in SRC_ENV.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("SOAPY_ARGS="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return "driver=sdrplay"
+
+
 def channels():
     f = FIRST_CHAN_HZ
     while f <= LAST_CHAN_HZ:
@@ -50,13 +64,16 @@ def measure_band(gain: float, settle_ms: int, dwell_ms: int,
     hop_step   = int(half_bw * 1.8)    # ~90% overlap, more hops but less edge artefact
     bin_hz     = SAMP_RATE / FFT_SIZE   # Hz per FFT bin
 
-    sdr = SoapySDR.Device(SoapySDR.KwargsFromString("driver=sdrplay"))
+    dev_args = device_args()
+    sdr = SoapySDR.Device(SoapySDR.KwargsFromString(dev_args))
     sdr.setAntenna(SoapySDR.SOAPY_SDR_RX, 0, antenna)
     sdr.setGainMode(SoapySDR.SOAPY_SDR_RX, 0, False)   # disable AGC
     sdr.setGain(SoapySDR.SOAPY_SDR_RX, 0, float(gain))
     sdr.setSampleRate(SoapySDR.SOAPY_SDR_RX, 0, SAMP_RATE)
 
-    rxStream = sdr.setupStream(SoapySDR.SOAPY_SDR_RX, SoapySDR.SOAPY_SDR_CF32)
+    # Remote dx-R2: force IQ onto lossless TCP (ignored on a local open).
+    stream_args = {"remote:prot": "tcp"} if "remote" in dev_args else {}
+    rxStream = sdr.setupStream(SoapySDR.SOAPY_SDR_RX, SoapySDR.SOAPY_SDR_CF32, [0], stream_args)
     sdr.activateStream(rxStream)
 
     buf_len    = FFT_SIZE
@@ -90,15 +107,27 @@ def measure_band(gain: float, settle_ms: int, dwell_ms: int,
                 sdr.readStream(rxStream, [buf], buf_len,
                                timeoutUs=int(settle_s * 2e6))
 
-            # accumulate power spectra across dwell_n FFT windows
+            # accumulate power spectra across dwell_n FFT windows. SoapyRemote
+            # delivers PARTIAL reads (~1006 samples/MTU datagram), so a single
+            # readStream rarely fills FFT_SIZE — fill a full block across multiple
+            # reads before transforming. (The local Pi returned full blocks; the
+            # remote does not — the same partial-read gotcha that bit rx_fm/wbfm.
+            # The old `r.ret == buf_len` check was never true over the network →
+            # zero measurements.)
             acc = np.zeros(FFT_SIZE)
             n_good = 0
-            for _ in range(dwell_n):
-                r = sdr.readStream(rxStream, [buf], buf_len,
+            fill = 0
+            for _ in range(dwell_n * 8):
+                r = sdr.readStream(rxStream, [buf[fill:]], buf_len - fill,
                                    timeoutUs=int(dwell_s * 2e6))
-                if r.ret == buf_len:
-                    acc += fft_power_db(buf)
-                    n_good += 1
+                if r.ret > 0:
+                    fill += r.ret
+                    if fill >= buf_len:
+                        acc += fft_power_db(buf)
+                        n_good += 1
+                        fill = 0
+                        if n_good >= dwell_n:
+                            break
 
             if n_good == 0:
                 continue
