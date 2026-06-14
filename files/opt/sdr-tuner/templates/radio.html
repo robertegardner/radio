@@ -150,9 +150,10 @@
   }
   .lcd-call {
     color: var(--text); font-size: 1.05rem; font-weight: 500;
-    min-height: 1.4em;
+    min-height: 1.4em; cursor: pointer;
   }
   .lcd-call .city { color: var(--text-dim); font-weight: 400; font-size: .85rem; }
+  .lcd-call .ovr-badge { color: var(--amber); font-size: .8rem; opacity: .8; }
   .lcd-track {
     display: flex; align-items: center; gap: .5rem;
     margin-top: .25rem; min-height: 1.3em;
@@ -214,6 +215,13 @@
   }
   .preset.empty .label { color: var(--text-faint); font-weight: 400; font-style: italic; }
   .preset.empty .freq { display: none; }
+  .preset .pmeta {
+    display: flex; gap: .3rem; justify-content: center; margin-top: .15rem;
+    font-size: .55rem; font-family: 'Courier New', monospace; line-height: 1;
+  }
+  .preset .pmeta .ant    { color: var(--amber-dim); }
+  .preset .pmeta .mono   { color: var(--amber); }
+  .preset .pmeta .stereo { color: var(--text-faint); }
 
   /* Controls */
   .controls {
@@ -449,7 +457,7 @@
       <div class="lcd-cover" id="lcd-cover"></div>
       <div class="lcd-info">
         <div class="lcd-freq" id="freq-display" title="Tap to direct tune">---.-<span class="unit" id="unit">MHz</span></div>
-        <div class="lcd-call" id="call-display">—</div>
+        <div class="lcd-call" id="call-display" title="Tap to edit the station name">—</div>
         <div class="lcd-track">
           <span id="track-display"></span>
           <span class="track-src" id="track-src" style="display:none"></span>
@@ -603,6 +611,7 @@ let currentBitrate = '128k';   // reflects server state; set from /api/status
 let currentStereo  = true;     // reflects server state; from /api/now_playing
 let currentAntenna = 'Antenna A';
 let currentArtUrl  = '';       // album-art currently shown (proxy URL key)
+let currentStationLabel = '';  // station name currently shown (for the ID editor)
 let directTuneBand = currentBand;
 
 // ---------------------------------------------------------------------------
@@ -633,10 +642,21 @@ function renderPresets() {
 
     const btn = document.createElement('button');
     btn.className = 'preset' + (p ? '' : ' empty') + (isActive ? ' active' : '');
+    // Per-preset FM settings badge: antenna (A/B/C) + stereo/mono.
+    let meta = '';
+    if (p && p.band === 'fm' && p.antenna) {
+      const ant  = p.antenna.slice(-1);            // A | B | C
+      const mono = p.stereo === false;
+      meta = `<span class="pmeta">`
+           + `<span class="ant">ANT ${ant}</span>`
+           + `<span class="${mono ? 'mono' : 'stereo'}">${mono ? '◗ MONO' : '◖◗ ST'}</span>`
+           + `</span>`;
+    }
     btn.innerHTML = `
       <span class="num">${i + 1}</span>
       <span class="label">${p ? (p.label || formatFreq(p.freq, p.band, !!p.hd, p.subchannel || 0)) : 'empty'}</span>
       <span class="freq">${p ? formatFreq(p.freq, p.band, !!p.hd, p.subchannel || 0) : ''}</span>
+      ${meta}
     `;
     btn.addEventListener('click', () => {
       if (btn.dataset.suppressClick) { delete btn.dataset.suppressClick; return; }
@@ -724,20 +744,18 @@ async function tuneTo(freq, band, hd = false, subchannel = 0, stereo = null, ant
     localStorage.setItem(LS_BAND,  band);
     localStorage.setItem(LS_HD,    hd ? '1' : '0');
     localStorage.setItem(LS_SUBCH, String(subchannel));
-    updateBandUI();
-    updateHdUI();
-    renderPresets();
-    if (bandChanged) { applyVizBandPref(); applyDuckBandPref(); }
-    if (wasPlaying) {
-      await waitForStream();
-      $('stream-led').classList.remove('hd');
-      playStream();
-    } else {
-      $('stream-led').classList.remove('hd');
-    }
+    // Cosmetic UI updates must never block the audio resume below.
+    try { updateBandUI(); updateHdUI(); renderPresets();
+          if (bandChanged) { applyVizBandPref(); applyDuckBandPref(); } } catch (e) {}
   } catch (e) {
-    $('stream-led').classList.remove('hd');
     showToast('Tune failed: ' + e.message);
+  } finally {
+    $('stream-led').classList.remove('hd');
+    // ALWAYS resume if we were playing — the source restart drops the mount for a
+    // few seconds; waitForStream rides out the remote reconnect and playStream's
+    // scheduleReconnect covers the rest. (Previously a throw before playStream left
+    // isPlaying=false → the stream stayed dead and you had to hit play.)
+    if (wasPlaying) { isPlaying = true; await waitForStream(); playStream(); }
   }
 }
 
@@ -750,8 +768,10 @@ async function waitForStream(maxWaitMs = 20000, pollMs = 500) {
     try {
       const d = await (await fetch('/api/status')).json();
       if (d.status === 'active') {
-        // Service is active but Icecast needs a few seconds to buffer.
-        await new Promise(r => setTimeout(r, 3000));
+        // Service is active, but wbfm still has to reconnect to the REMOTE dx-R2
+        // and publish before the mount serves audio (~5-8 s). Wait that out; any
+        // residual gap is covered by playStream's scheduleReconnect.
+        await new Promise(r => setTimeout(r, 6000));
         return;
       }
     } catch (e) {}
@@ -1117,7 +1137,10 @@ async function pollNowPlaying() {
     const rds = d.rds || {};
     const fcc = d.fcc;
     let label = '—', city = '';
-    if (rds.ps) {
+    if (d.fcc_override && fcc && fcc.call) {       // hand-pinned name wins over RDS/FCC
+      label = fcc.call;
+      if (fcc.city) city = fcc.city + (fcc.state ? ', ' + fcc.state : '');
+    } else if (rds.ps) {
       label = rds.ps;
       if (fcc && fcc.city) city = fcc.city + (fcc.state ? ', ' + fcc.state : '');
     } else if (fcc && fcc.call) {
@@ -1126,7 +1149,10 @@ async function pollNowPlaying() {
     } else if (currentBand === 'am') {
       label = 'AM Broadcast';
     }
-    $('call-display').innerHTML = label + (city ? ` <span class="city">· ${city}</span>` : '');
+    currentStationLabel = (label && label !== '—') ? label : '';
+    $('call-display').innerHTML = label
+      + (city ? ` <span class="city">· ${city}</span>` : '')
+      + (d.fcc_override ? ' <span class="ovr-badge" title="hand-edited name">✎</span>' : '');
     // Track + provenance. Prefer the resolved track (what the ID pipeline and
     // the art/Android client use), falling back to raw RDS text. The badge
     // shows which source identified it.
@@ -1412,36 +1438,65 @@ $('viz-toggle').addEventListener('click', () => {
   setViz(!vizOn);
 });
 
-// MONO toggle: POST /api/stereo (server restarts the stream — brief audio gap).
-$('mono-toggle').addEventListener('click', async () => {
+// Apply a setting that restarts the source, keeping audio alive across the gap:
+// pause, POST, then wait out the reconnect and resume (like tuneTo).
+async function applyWithResume(btn, doPost) {
+  btn.disabled = true;
+  const wasPlaying = isPlaying;
+  if (isPlaying) pauseStream();
+  $('stream-led').classList.add('hd');
+  try { await doPost(); } catch (e) {}
+  $('stream-led').classList.remove('hd');
+  if (wasPlaying) { isPlaying = true; await waitForStream(); playStream(); }
+  btn.disabled = false;
+}
+
+// MONO toggle: POST /api/stereo (restarts the stream).
+$('mono-toggle').addEventListener('click', () => {
   const mb = $('mono-toggle');
   const goMono = !mb.classList.contains('on');   // turning mono ON -> stereo:false
-  mb.disabled = true;
-  try {
+  applyWithResume(mb, async () => {
     const r = await fetch('/api/stereo', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({stereo: !goMono}),
     });
     if (r.ok) mb.classList.toggle('on', goMono);
-  } catch (e) {}
-  mb.disabled = false;
+  });
 });
 
-// Antenna cycle A->B->C->A: POST /api/antenna (server restarts the stream — brief gap).
-$('ant-toggle').addEventListener('click', async () => {
+// Antenna cycle A->B->C->A: POST /api/antenna (restarts the stream).
+$('ant-toggle').addEventListener('click', () => {
   const ab = $('ant-toggle');
   const cur = (ab.textContent.trim().slice(-1) || 'A');     // 'A'|'B'|'C'
   const nextLetter = {A: 'B', B: 'C', C: 'A'}[cur] || 'A';
-  ab.disabled = true;
-  try {
+  applyWithResume(ab, async () => {
     const r = await fetch('/api/antenna', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({antenna: 'Antenna ' + nextLetter}),
     });
     if (r.ok) { ab.textContent = 'ANT ' + nextLetter; ab.classList.toggle('on', nextLetter !== 'A'); }
-  } catch (e) {}
-  ab.disabled = false;
+  });
 });
+
+// Edit station ID: tap the station name to pin a corrected name (RDS/FCC are often
+// wrong). Writes an override that wins over RDS/FCC in the display. No restart.
+async function editStationId() {
+  if (!currentFreq || (currentBand !== 'fm' && currentBand !== 'am')) return;
+  const name = prompt(
+    `Station name for ${formatFreq(currentFreq, currentBand)} (blank = use RDS/database):`,
+    currentStationLabel || '');
+  if (name === null) return;
+  try {
+    const r = await fetch('/api/station-override', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({band: currentBand, freq: currentFreq, name: name.trim()}),
+    });
+    const j = await r.json();
+    if (j.ok) { showToast(name.trim() ? `Saved name: ${name.trim()}` : 'Cleared override'); pollNowPlaying(); }
+    else showToast('Edit failed: ' + (j.error || ''));
+  } catch (e) { showToast('Edit failed'); }
+}
+$('call-display').addEventListener('click', editStationId);
 audio.addEventListener('playing', () => {
   if (vizOn && !visualizer) ensureVizGraph();
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
