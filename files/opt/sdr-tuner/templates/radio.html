@@ -478,6 +478,8 @@
       <button class="btn" id="stations-btn" title="Browse stations">≡</button>
       <button class="btn toggle" id="viz-toggle" title="Audio visualizer — tap the background for fullscreen, double-tap for next pattern" style="display:none">VIZ</button>
       <button class="btn toggle" id="duck-toggle" title="Duck on talk — near-mute commercials/DJ talk, prompt restore on music">DUCK</button>
+      <button class="btn toggle" id="mono-toggle" title="Mono — drops the noisy 38 kHz stereo subcarrier; much cleaner on weak/talk stations">MONO</button>
+      <button class="btn toggle" id="ant-toggle" title="FM antenna A/B/C (A=Shakespeare, B=dipole+LNA, C=long-wire). Tap to cycle.">ANT A</button>
     </div>
     <div></div>
     <div class="ctrl-group">
@@ -1079,6 +1081,20 @@ async function pollNowPlaying() {
       if (changed) { updateBandUI(); updateHdUI(); renderPresets(); }
       if (bandChanged) { applyVizBandPref(); applyDuckBandPref(); }
     }
+    // MONO toggle reflects server state (on = mono); FM-only.
+    if (typeof d.stereo === 'boolean') {
+      const mb = $('mono-toggle');
+      mb.classList.toggle('on', !d.stereo);
+      mb.disabled = (currentBand !== 'fm');
+    }
+    // Antenna A/B/C cycle reflects server state; FM-only.
+    if (d.antenna) {
+      const ab = $('ant-toggle');
+      const letter = d.antenna.slice(-1);            // 'A' | 'B' | 'C'
+      ab.textContent = 'ANT ' + letter;
+      ab.classList.toggle('on', letter !== 'A');     // highlight non-default
+      ab.disabled = (currentBand !== 'fm');
+    }
     // Frequency display
     if (currentFreq) {
       $('freq-display').innerHTML =
@@ -1382,6 +1398,37 @@ function toggleVizFullscreen() {
 $('viz-toggle').addEventListener('click', () => {
   if (!vizOn && !visualizer && !ensureVizGraph()) return;
   setViz(!vizOn);
+});
+
+// MONO toggle: POST /api/stereo (server restarts the stream — brief audio gap).
+$('mono-toggle').addEventListener('click', async () => {
+  const mb = $('mono-toggle');
+  const goMono = !mb.classList.contains('on');   // turning mono ON -> stereo:false
+  mb.disabled = true;
+  try {
+    const r = await fetch('/api/stereo', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({stereo: !goMono}),
+    });
+    if (r.ok) mb.classList.toggle('on', goMono);
+  } catch (e) {}
+  mb.disabled = false;
+});
+
+// Antenna cycle A->B->C->A: POST /api/antenna (server restarts the stream — brief gap).
+$('ant-toggle').addEventListener('click', async () => {
+  const ab = $('ant-toggle');
+  const cur = (ab.textContent.trim().slice(-1) || 'A');     // 'A'|'B'|'C'
+  const nextLetter = {A: 'B', B: 'C', C: 'A'}[cur] || 'A';
+  ab.disabled = true;
+  try {
+    const r = await fetch('/api/antenna', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({antenna: 'Antenna ' + nextLetter}),
+    });
+    if (r.ok) { ab.textContent = 'ANT ' + nextLetter; ab.classList.toggle('on', nextLetter !== 'A'); }
+  } catch (e) {}
+  ab.disabled = false;
 });
 audio.addEventListener('playing', () => {
   if (vizOn && !visualizer) ensureVizGraph();

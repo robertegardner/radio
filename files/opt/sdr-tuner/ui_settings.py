@@ -16,6 +16,10 @@ DEFAULTS = {
     "site_title":     "Pi Radio",
     "bitrate":        "128k",  # MP3 encode bitrate; validated against the
                                # allowlist in app.py before it reaches the stream
+    "stereo":         True,    # FM stereo on/off; False = mono (skips the L-R
+                               # subcarrier — far less hiss on weak/talk stations)
+    "antenna":        "Antenna A",  # FM antenna: A (Shakespeare), B (dipole+LNA),
+                                    # or C (long-wire) — cycled from the radio UI
 }
 
 

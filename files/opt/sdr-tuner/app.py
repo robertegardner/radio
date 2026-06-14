@@ -73,6 +73,26 @@ def current_bitrate() -> str:
     br = ui_settings.load().get("bitrate", DEFAULT_BITRATE)
     return br if br in ALLOWED_BITRATES else DEFAULT_BITRATE
 
+
+def current_stereo() -> bool:
+    """Persisted FM stereo on/off (False = mono). Lands in active.env STEREO=,
+    which stream.sh reads to pick the stereo_decode path vs a clean mono encode."""
+    return bool(ui_settings.load().get("stereo", True))
+
+
+# FM antenna port on the dx-R2 — all three selectable so you can A/B/C them:
+#   A = Shakespeare 5120 + FM bandpass (the normal FM antenna)
+#   B = 137 MHz dipole + Sawbird LNA (broadband enough to try; LNA may help weak)
+#   C = long-wire (the AM antenna; usually poor for FM, but offered for comparison)
+ALLOWED_ANTENNAS = ["Antenna A", "Antenna B", "Antenna C"]
+DEFAULT_ANTENNA  = "Antenna A"
+
+
+def current_antenna() -> str:
+    """Persisted FM antenna, clamped to the allowlist. Lands in active.env ANTENNA="""
+    a = ui_settings.load().get("antenna", DEFAULT_ANTENNA)
+    return a if a in ALLOWED_ANTENNAS else DEFAULT_ANTENNA
+
 app = Flask(__name__)
 
 
@@ -171,11 +191,16 @@ def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0
         f"SAMP={samp}\n"
         f"GAIN={gain}\n"
         f"BITRATE={current_bitrate()}\n"
+        f"STEREO={'1' if current_stereo() else '0'}\n"
         f"MOUNT=fm.mp3\n"
         f"ICECAST_PASS={ICECAST_PASS}\n"
     )
     if hd:
         content += f"SUBCHANNEL={subchannel}\n"
+    if mode == "wbfm":   # FM antenna A/B/C select (am_stream/hd own their antenna).
+        # QUOTE it — the value has a space ("Antenna A") and stream.sh sources this
+        # file; unquoted, `source` runs "A" as a command (exit 127 → restart loop).
+        content += f'ANTENNA="{current_antenna()}"\n'
     ENV_PATH.write_text(content)
 
 
@@ -456,6 +481,8 @@ def api_now_playing():
         "band":           band,
         "hd":             is_hd,
         "subchannel":     subchannel,
+        "stereo":         current_stereo(),
+        "antenna":        current_antenna(),
         "hd_probing":     hd_state.get("hd_probing", False),
         "hd_locked":      hd_state.get("hd_locked", False),
         "hd_unavailable": hd_state.get("hd_unavailable", False),
@@ -533,6 +560,54 @@ def api_bitrate():
         sysctl("restart")
         restarted = True
     return jsonify({"ok": True, "bitrate": br, "restarted": restarted})
+
+
+@app.route("/api/stereo", methods=["POST"])
+def api_stereo():
+    """Toggle FM stereo vs mono, then restart so stream.sh re-picks the path.
+    Mono skips stereo_decode entirely (no 38 kHz L-R subcarrier) — much cleaner
+    on weak/talk stations. Persisted in ui_settings; lands in active.env STEREO=."""
+    payload = request.get_json(silent=True) or {}
+    on = bool(payload.get("stereo", True))
+    freq, band, is_hd, subchannel = current_tune()
+    restarted = False
+    try:
+        ui_settings.save({"stereo": on})
+        if freq:
+            write_env(freq, band, is_hd, subchannel)
+    except OSError as e:
+        app.logger.error("api_stereo save/write_env failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    if freq:
+        clear_runtime_state()
+        sysctl("restart")
+        restarted = True
+    return jsonify({"ok": True, "stereo": on, "restarted": restarted})
+
+
+@app.route("/api/antenna", methods=["POST"])
+def api_antenna():
+    """Select the FM antenna port (A = Shakespeare, B = dipole+LNA), then restart
+    so wbfm_stream re-opens on it. Persisted in ui_settings; lands in active.env
+    ANTENNA=. FM-only — has no effect on AM/HD."""
+    payload = request.get_json(silent=True) or {}
+    ant = str(payload.get("antenna", "")).strip()
+    if ant not in ALLOWED_ANTENNAS:
+        return jsonify({"ok": False, "error": f"invalid antenna {ant!r}"}), 400
+    freq, band, is_hd, subchannel = current_tune()
+    restarted = False
+    try:
+        ui_settings.save({"antenna": ant})
+        if freq:
+            write_env(freq, band, is_hd, subchannel)
+    except OSError as e:
+        app.logger.error("api_antenna save/write_env failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    if freq:
+        clear_runtime_state()
+        sysctl("restart")
+        restarted = True
+    return jsonify({"ok": True, "antenna": ant, "restarted": restarted})
 
 
 # ---------------------------------------------------------------------------
