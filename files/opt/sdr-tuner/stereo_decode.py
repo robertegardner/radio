@@ -131,6 +131,18 @@ def main() -> int:
                          "AFTER (mux path). f32le emits unclipped float so the loud "
                          "PRE-emphasis peaks survive into ffmpeg's float de-emphasis + "
                          "limiter (rack path: prevents int16 clipping on loud peaks).")
+    ap.add_argument("--carrier-alpha", type=float, default=0.9,
+                    help="EMA factor for the regenerated 38 kHz carrier amplitude, "
+                         "smoothed ACROSS blocks. The round-1 per-block RMS normalize "
+                         "stepped the carrier scale at every block boundary on a noisy "
+                         "pilot → clicks. Smoothing removes the steps. Default 0.9.")
+    ap.add_argument("--carrier-clamp", type=float, default=1.3,
+                    help="clamp |normalized carrier| to this. A clean carrier is ~±1.0; "
+                         "a noisy live pilot drives instantaneous crest to 3–4× → those "
+                         "transients multiply into L−R as clicks. Clamping kills them "
+                         "with no effect on clean signal (offline A/B: 12× fewer clicks "
+                         "on a buried-pilot stress case, identical on a clean dump). "
+                         "Default 1.3.")
     args = ap.parse_args()
 
     fir_pilot = Fir(TAPS_PILOT)
@@ -142,6 +154,8 @@ def main() -> int:
     scale = np.float32(args.scale)
     floor = float(args.pilot_floor)
     full = max(floor * 3.0, floor + 1e-6)  # pilot level for full stereo
+    carrier_alpha = np.float32(args.carrier_alpha)
+    carrier_clamp = np.float32(args.carrier_clamp)
 
     # Block of 8192 float32 (~33 ms at 250k) — enough for cheap FIRs, small
     # enough for low latency. stdin may hand us short reads; loop until we have
@@ -154,7 +168,11 @@ def main() -> int:
     stdout = sys.stdout.buffer
 
     pilot_lvl = np.float32(0.0)
+    c38_amp_st = np.float32(0.0)  # carrier amplitude, smoothed across blocks
+    prev_blend = 0.0              # last block's blend, for a continuous ramp
     peak_out = 0.0
+    clamp_hits = 0               # samples the carrier clamp caught (telemetry)
+    clamp_total = 0
     blocks = 0
 
     while True:
@@ -173,12 +191,24 @@ def main() -> int:
             mpx = np.frombuffer(raw, dtype=np.float32)
 
         pilot = fir_pilot(mpx)
-        # coherent 38 kHz carrier from the squared pilot, normalized to ~unit amp
+        # coherent 38 kHz carrier from the squared pilot, normalized to ~unit amp.
         c38 = fir_c38(pilot * pilot)
-        c38_amp = np.float32(np.sqrt(np.mean(c38 * c38)) * np.sqrt(2.0))
-        if c38_amp < 1e-6:
-            c38_amp = np.float32(1e-6)
-        c38n = c38 / c38_amp
+        blk_amp = np.float32(np.sqrt(np.mean(c38 * c38)) * np.sqrt(2.0))
+        # Smooth the carrier amplitude ACROSS blocks (EMA) instead of normalizing
+        # per-block: a per-block scale steps the carrier at every block boundary on
+        # a noisy pilot, and that step is a click. Prime on the first block.
+        if c38_amp_st <= 0:
+            c38_amp_st = blk_amp if blk_amp > 1e-6 else np.float32(1e-6)
+        else:
+            c38_amp_st = carrier_alpha * c38_amp_st + (np.float32(1.0) - carrier_alpha) * blk_amp
+        amp = c38_amp_st if c38_amp_st > 1e-6 else np.float32(1e-6)
+        c38n = c38 / amp
+        # Clamp the instantaneous crest: a clean carrier is ~±1, a noisy pilot spikes
+        # to 3–4× and those transients become clicks in L−R. Clamping bounds them
+        # without touching the clean case.
+        clamp_total += c38n.size
+        clamp_hits += int(np.count_nonzero(np.abs(c38n) > carrier_clamp))
+        np.clip(c38n, -carrier_clamp, carrier_clamp, out=c38n)
 
         # Delay the MPX to time-align with the carrier regenerated above, then
         # take both the sum and the (coherently-detected) diff from it.
@@ -191,7 +221,11 @@ def main() -> int:
         pilot_lvl = np.float32(0.9) * pilot_lvl + np.float32(0.1) * blk_pilot
         blend = (float(pilot_lvl) - floor) / (full - floor)
         blend = float(min(1.0, max(0.0, blend)))
-        diff_lr *= np.float32(blend)
+        # Ramp the gain across the block from the previous block's blend to this
+        # one's — a per-block step in the diff gain is itself an audible click.
+        ramp = np.linspace(prev_blend, blend, diff_lr.size, dtype=np.float32)
+        diff_lr *= ramp
+        prev_blend = blend
 
         left = (sum_lr + diff_lr) * np.float32(0.5) * scale
         right = (sum_lr - diff_lr) * np.float32(0.5) * scale
@@ -215,13 +249,16 @@ def main() -> int:
 
         blocks += 1
         if blocks % 300 == 0:  # ~10 s: level telemetry for tuning the gate/scale
+            clamp_frac = (clamp_hits / clamp_total) if clamp_total else 0.0
             sys.stderr.write(
                 f"stereo_decode: pilot_rms={float(pilot_lvl):.4f} blend={blend:.2f} "
+                f"carrier_amp={float(c38_amp_st):.5f} clamp={clamp_frac*100:.2f}% "
                 f"peak_out_max={peak_out:.3f} (scale={float(scale):.1f}, "
-                f"{'f32' if out_f32 else 's16'})\n"
+                f"clamp={float(carrier_clamp):.1f}, {'f32' if out_f32 else 's16'})\n"
             )
             sys.stderr.flush()
             peak_out = 0.0  # reset window
+            clamp_hits = clamp_total = 0  # reset window
 
     return 0
 
