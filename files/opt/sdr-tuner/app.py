@@ -55,6 +55,8 @@ MUX_ENV_PATH       = Path("/etc/sdr-streams/mux.env")
 CHANNELS_PATH      = Path("/etc/sdr-streams/channels.json")
 MUX_STATUS_PATH    = Path("/run/sdr-streams/mux_status.json")
 IQ_STATUS_PATH     = Path("/run/sdr-streams/iq_capture.json")
+PILOT_STATUS_PATH  = Path("/run/sdr-streams/pilot.json")
+PILOT_MAX_AGE_S    = 5.0   # stereo_decode writes ~2x/sec; older than this = mono
 MUX_SERVICE        = "sdr-mux"
 IQ_CAPTURE_SERVICE = "sdr-iq-capture"
 # Clean ceiling on this Pi 5 alongside the scanner (3 channels = 0 drops; the 4th
@@ -78,6 +80,24 @@ def current_stereo() -> bool:
     """Persisted FM stereo on/off (False = mono). Lands in active.env STEREO=,
     which stream.sh reads to pick the stereo_decode path vs a clean mono encode."""
     return bool(ui_settings.load().get("stereo", True))
+
+
+def pilot_state() -> dict:
+    """True 19 kHz pilot detection (not the selected mode). stereo_decode.py
+    publishes pilot.json ~2x/sec while it runs; report locked only when that file
+    is FRESH (it isn't written in mono mode / when the decoder is down) AND says
+    stereo. Returns {locked, rms, blend}."""
+    out = {"locked": False, "rms": None, "blend": None}
+    try:
+        if time.time() - PILOT_STATUS_PATH.stat().st_mtime > PILOT_MAX_AGE_S:
+            return out
+    except OSError:
+        return out
+    d = _load_json(PILOT_STATUS_PATH) or {}
+    out["rms"]    = d.get("pilot_rms")
+    out["blend"]  = d.get("blend")
+    out["locked"] = bool(d.get("stereo"))
+    return out
 
 
 # FM antenna port on the dx-R2 — all three selectable so you can A/B/C them:
@@ -456,6 +476,7 @@ def api_now_playing():
     rds      = _load_json(np_path)           or {}
     cap      = _load_json(CAPTIONS_PATH)    or {}
     hd_state = _load_json(HD_STATUS_PATH)   or {}
+    _pilot   = pilot_state()
 
     caption_updated = cap.get("caption_updated", 0) or 0
     age_s = round(time.time() - caption_updated, 1) if caption_updated else None
@@ -482,7 +503,11 @@ def api_now_playing():
         "hd":             is_hd,
         "subchannel":     subchannel,
         "fcc_override":   bool(freq) and station_db.has_override(band, freq),
-        "stereo":         current_stereo(),
+        "stereo":         current_stereo(),     # selected MODE (mono toggle/presets)
+        # True pilot lock: stereo mode + FM + a fresh stereo pilot from stereo_decode.
+        "pilot":          bool(band == "fm" and current_stereo() and _pilot["locked"]),
+        "pilot_rms":      _pilot["rms"],
+        "pilot_blend":    _pilot["blend"],
         "antenna":        current_antenna(),
         "hd_probing":     hd_state.get("hd_probing", False),
         "hd_locked":      hd_state.get("hd_locked", False),

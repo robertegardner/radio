@@ -35,11 +35,31 @@ a distant affiliate degrades gracefully to mono instead of hissing in stereo.
 does that). `--pilot-floor` sets where the blend reaches full mono.
 """
 import argparse
+import json
+import os
 import sys
+import time
 
 import numpy as np
 
 FS = 250_000  # composite rate out of csdr (8 Msps / 32)
+
+# Pilot-lock status for the UI (true 19 kHz pilot detection, not the chosen mode).
+# Written ~2x/sec; the tuner API freshness-gates it so a stale file reads as mono.
+PILOT_STATUS_PATH = "/run/sdr-streams/pilot.json"
+
+
+def _write_pilot(rms: float, blend: float) -> None:
+    """Publish pilot lock atomically. `locked` = clearly receiving a stereo pilot
+    (blend past the half-way point of the honesty gate's mono→stereo ramp)."""
+    try:
+        tmp = PILOT_STATUS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"ts": time.time(), "pilot_rms": round(rms, 5),
+                       "blend": round(blend, 3), "stereo": bool(blend >= 0.5)}, f)
+        os.replace(tmp, PILOT_STATUS_PATH)
+    except OSError:
+        pass  # status is best-effort; never let it break the audio path
 
 
 def _lowpass(ntaps: int, cutoff: float, fs: float) -> np.ndarray:
@@ -248,6 +268,8 @@ def main() -> int:
         stdout.flush()
 
         blocks += 1
+        if blocks % 15 == 0:   # ~0.5 s: publish pilot lock for the UI LED/meter
+            _write_pilot(float(pilot_lvl), blend)
         if blocks % 300 == 0:  # ~10 s: level telemetry for tuning the gate/scale
             clamp_frac = (clamp_hits / clamp_total) if clamp_total else 0.0
             sys.stderr.write(
@@ -268,3 +290,10 @@ if __name__ == "__main__":
         sys.exit(main())
     except (BrokenPipeError, KeyboardInterrupt):
         sys.exit(0)
+    finally:
+        # Drop the status on exit so a stop/mono-switch reads as no-pilot at once
+        # (the API also freshness-gates the file as a backstop against crashes).
+        try:
+            os.unlink(PILOT_STATUS_PATH)
+        except OSError:
+            pass

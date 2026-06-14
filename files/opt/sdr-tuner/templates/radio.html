@@ -634,7 +634,8 @@ let presets    = loadPresets();
 let isPlaying  = false;
 let modalBand  = 'fm';
 let currentBitrate = '128k';   // reflects server state; set from /api/status
-let currentStereo  = true;     // reflects server state; from /api/now_playing
+let currentStereo  = true;     // selected MODE (mono toggle/presets); from /api/now_playing
+let currentPilot   = false;    // TRUE 19 kHz pilot lock; drives the STEREO LED + L/R meter
 let currentAntenna = 'Antenna A';
 let currentArtUrl  = '';       // album-art currently shown (proxy URL key)
 let currentStationLabel = '';  // station name currently shown (for the ID editor)
@@ -1158,16 +1159,17 @@ async function pollNowPlaying() {
       if (changed) { updateBandUI(); updateHdUI(); renderPresets(); }
       if (bandChanged) { applyVizBandPref(); applyDuckBandPref(); }
     }
-    // MONO toggle + STEREO LED reflect server state; FM-only.
+    // MONO toggle reflects the selected MODE (d.stereo); the STEREO LED + label
+    // + L/R meter reflect TRUE 19 kHz pilot detection (d.pilot) from the decoder.
     if (typeof d.stereo === 'boolean') {
       currentStereo = d.stereo;
       const mb = $('mono-toggle');
       mb.classList.toggle('on', !d.stereo);
       mb.disabled = (currentBand !== 'fm');
-      const onAir = currentBand === 'fm' && d.stereo;
-      $('stereo-led').classList.toggle('on', onAir);
-      $('stereo-label').textContent = (currentBand === 'fm' && !d.stereo) ? 'MONO' : 'STEREO';
     }
+    currentPilot = (currentBand === 'fm') && (d.pilot === true);
+    $('stereo-led').classList.toggle('on', currentPilot);
+    $('stereo-label').textContent = (currentBand === 'fm' && !currentPilot) ? 'MONO' : 'STEREO';
     // Antenna A/B/C cycle reflects server state; FM-only.
     if (d.antenna) {
       currentAntenna = d.antenna;
@@ -1417,7 +1419,7 @@ function startLevels() {
   const bufL = new Uint8Array(lvlAnalyserL.fftSize), bufR = new Uint8Array(lvlAnalyserR.fftSize);
   const loop = () => {
     levelsRaf = requestAnimationFrame(loop);
-    const stereo = currentStereo && currentBand === 'fm';
+    const stereo = currentPilot;   // true 19 kHz pilot lock (FM-gated server-side)
     $('levels').classList.toggle('mono', !stereo);
     lvlAnalyserL.getByteTimeDomainData(bufL);
     setLvlFill('lvl-l', lvlRms(bufL));
