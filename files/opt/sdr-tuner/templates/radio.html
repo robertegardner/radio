@@ -448,6 +448,7 @@
       <div class="lcd-status">
         <span><span class="led" id="hd-led"></span> <span id="hd-label">HD</span></span>
         <span><span class="led" id="rds-led"></span> RDS</span>
+        <span><span class="led" id="stereo-led"></span> <span id="stereo-label">STEREO</span></span>
         <span><span class="led" id="stream-led"></span> STREAM</span>
       </div>
     </div>
@@ -662,12 +663,12 @@ function renderPresets() {
       if (btn.dataset.suppressClick) { delete btn.dataset.suppressClick; return; }
       if (p) tuneTo(p.freq, p.band, !!p.hd, p.subchannel || 0,
                     (typeof p.stereo === 'boolean' ? p.stereo : null), p.antenna || null);
-      else   savePresetSlot(i);
+      else   editOrSavePreset(i);
     });
-    btn.addEventListener('contextmenu', e => { e.preventDefault(); savePresetSlot(i); });
+    btn.addEventListener('contextmenu', e => { e.preventDefault(); editOrSavePreset(i); });
     let lpTimer;
     const startLP = () => {
-      lpTimer = setTimeout(() => { savePresetSlot(i); btn.dataset.suppressClick = '1'; }, 700);
+      lpTimer = setTimeout(() => { editOrSavePreset(i); btn.dataset.suppressClick = '1'; }, 700);
     };
     const cancelLP = () => clearTimeout(lpTimer);
     btn.addEventListener('touchstart', startLP, {passive: true});
@@ -684,9 +685,11 @@ function savePresetSlot(slot) {
   if (!currentFreq) { showToast('Tune to a station first'); return; }
   const list = stations[currentBand] || [];
   const found = list.find(s => stationFreqStr(s, currentBand) === currentFreq);
-  let label = found && (found.call || found.ps)
-    ? (found.call || found.ps)
-    : (currentBand.toUpperCase() + ' ' + formatFreq(currentFreq, currentBand));
+  // Prefer the name currently shown (override > RDS > FCC), then the scan list,
+  // then bare freq. So a station you've renamed lands in the preset already named.
+  let label = currentStationLabel
+    || (found && (found.call || found.ps))
+    || (currentBand.toUpperCase() + ' ' + formatFreq(currentFreq, currentBand));
   if (currentHd) label += ' HD' + (currentSubchannel + 1);
   presets[slot] = { freq: currentFreq, band: currentBand, hd: currentHd, subchannel: currentSubchannel,
                     stereo: currentStereo, antenna: currentAntenna, label };
@@ -694,6 +697,21 @@ function savePresetSlot(slot) {
   renderPresets();
   const ant = currentBand === 'fm' ? ` · ${currentAntenna.slice(-1)}${currentStereo ? '' : '·mono'}` : '';
   showToast(`Saved to preset ${slot + 1}: ${label}${ant}`);
+}
+
+// Long-press / right-click a preset: rename it (filled) or save the current
+// station (empty). Blank rename = re-save the current station into the slot.
+function editOrSavePreset(slot) {
+  const p = presets[slot];
+  if (!p) { savePresetSlot(slot); return; }
+  const name = prompt(`Preset ${slot + 1} title (blank = re-save the current station here):`, p.label || '');
+  if (name === null) return;
+  if (name.trim()) {
+    p.label = name.trim(); savePresets(); renderPresets();
+    showToast(`Renamed preset ${slot + 1}: ${p.label}`);
+  } else {
+    savePresetSlot(slot);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,12 +1129,15 @@ async function pollNowPlaying() {
       if (changed) { updateBandUI(); updateHdUI(); renderPresets(); }
       if (bandChanged) { applyVizBandPref(); applyDuckBandPref(); }
     }
-    // MONO toggle reflects server state (on = mono); FM-only.
+    // MONO toggle + STEREO LED reflect server state; FM-only.
     if (typeof d.stereo === 'boolean') {
       currentStereo = d.stereo;
       const mb = $('mono-toggle');
       mb.classList.toggle('on', !d.stereo);
       mb.disabled = (currentBand !== 'fm');
+      const onAir = currentBand === 'fm' && d.stereo;
+      $('stereo-led').classList.toggle('on', onAir);
+      $('stereo-label').textContent = (currentBand === 'fm' && !d.stereo) ? 'MONO' : 'STEREO';
     }
     // Antenna A/B/C cycle reflects server state; FM-only.
     if (d.antenna) {
@@ -1492,8 +1513,20 @@ async function editStationId() {
       body: JSON.stringify({band: currentBand, freq: currentFreq, name: name.trim()}),
     });
     const j = await r.json();
-    if (j.ok) { showToast(name.trim() ? `Saved name: ${name.trim()}` : 'Cleared override'); pollNowPlaying(); }
-    else showToast('Edit failed: ' + (j.error || ''));
+    if (j.ok) {
+      // Propagate the new name to any preset on this freq/band so its title updates.
+      if (name.trim()) {
+        let changed = false;
+        presets.forEach(p => {
+          if (p && p.band === currentBand && String(p.freq) === String(currentFreq)) {
+            p.label = name.trim(); changed = true;
+          }
+        });
+        if (changed) { savePresets(); renderPresets(); }
+      }
+      showToast(name.trim() ? `Saved name: ${name.trim()}` : 'Cleared override');
+      pollNowPlaying();
+    } else showToast('Edit failed: ' + (j.error || ''));
   } catch (e) { showToast('Edit failed'); }
 }
 $('call-display').addEventListener('click', editStationId);
