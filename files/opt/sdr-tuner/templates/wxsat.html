@@ -227,7 +227,7 @@
   <div class="modal-card">
     <div class="modal-head">
       <span class="pm-title" id="pmTitle">Pass</span>
-      <button class="del" id="pmClose">✕ Close</button>
+      <button class="pv" id="pmClose">✕ Close</button>
     </div>
     <div class="live-grid">
       <div class="live-spectrum">
@@ -389,7 +389,7 @@ function escapeHTML(s) {
 
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.del');
-  if (!btn) return;
+  if (!btn || !btn.dataset.id) return;  // ignore stray .del elements without an id
   if (!confirm('Delete this capture?')) return;
   btn.disabled = true;
   try {

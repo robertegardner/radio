@@ -882,11 +882,15 @@ def api_wxsat_delete():
     if rec is None:
         return jsonify({"ok": False, "error": "not found"}), 404
 
-    # Remove the product directory (first path component of the image), guarding
-    # strictly against escaping WXSAT_DIR.
+    # Remove the per-pass capture directory (product images, capture.log, and any
+    # retained baseband.cs16). Prefer the canonical `outdir`; fall back to the
+    # image's top path component for legacy records that predate outdir. Keying
+    # off `image` alone orphaned the multi-GB IQ of *failed* captures (no image
+    # but a retained baseband.cs16) — using outdir reclaims it. Guard strictly
+    # against escaping WXSAT_DIR.
     img = rec.get("image") or rec.get("thumb")
-    if img:
-        top = str(img).split("/", 1)[0]
+    top = rec.get("outdir") or (str(img).split("/", 1)[0] if img else "")
+    if top:
         target = (WXSAT_DIR / top).resolve()
         try:
             base = WXSAT_DIR.resolve()
