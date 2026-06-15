@@ -39,6 +39,7 @@ import SoapySDR
 from SoapySDR import SOAPY_SDR_CS16, SOAPY_SDR_RX
 
 RFI_STATUS_PATH = Path("/run/sdr-streams/rfi_status.json")
+SRC_ENV = Path("/etc/radio-compute/source-dx-r2.env")
 
 HW_RATE = 2_000_000
 # With HDR mode engaged the dx-R2's HDR signal path eliminates the DC spike
@@ -87,6 +88,19 @@ TAPS1 = lowpass_taps(63, 100_000, HW_RATE)
 # cutoff also drops the 7-9 kHz noise floor by ~8 dB, which reduces hiss on
 # weaker stations like KZYM 1220.
 TAPS2 = lowpass_taps(511, 3_500, HW_RATE // DECIM1, beta=10.0)
+
+
+def device_args() -> str:
+    """SoapySDR device args. On the rack (radio-compute) the dx-R2 is REMOTE —
+    read SOAPY_ARGS (driver=remote,...,remote:driver=sdrplay) from the source env.
+    On the Pi (file absent) fall back to the local driver=sdrplay. One script,
+    both tiers — same pattern as fm_scan/am_scan."""
+    if SRC_ENV.exists():
+        for line in SRC_ENV.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("SOAPY_ARGS="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return f"driver={DRIVER}"
 
 
 def read_env(path: str = "/etc/sdr-streams/active.env") -> dict:
@@ -141,6 +155,11 @@ def startup_rfi_scan(sdr, rx, lo_freq_hz: float, target_freq_hz: float,
     deadline = time.monotonic() + duration_s
     sys.stderr.write(f"am_stream: noise-floor scan ({duration_s:.0f}s)…\n")
     sys.stderr.flush()
+    # SoapyRemote delivers PARTIAL reads (~1006 samples/MTU datagram), almost
+    # always < n_fft, so a per-read `len//n_fft` chunking yields ZERO FFT blocks
+    # over the network (same gotcha that bit am_scan/rx_fm). Accumulate across
+    # reads and consume whole n_fft blocks from the buffer.
+    acc = np.empty(0, dtype=np.complex64)
     while time.monotonic() < deadline:
         sr = sdr.readStream(rx, [raw], read_block, timeoutUs=500_000)
         if sr.ret <= 0:
@@ -149,9 +168,10 @@ def startup_rfi_scan(sdr, rx, lo_freq_hz: float, target_freq_hz: float,
         i = raw[0:2 * n:2].astype(np.float32) / 32768.0
         q = raw[1:2 * n:2].astype(np.float32) / 32768.0
         iq = (i + 1j * q).astype(np.complex64)
-        n_chunks = len(iq) // n_fft
-        for c in range(n_chunks):
-            chunk = iq[c * n_fft:(c + 1) * n_fft]
+        acc = np.concatenate((acc, iq)) if acc.size else iq
+        while acc.size >= n_fft:
+            chunk = acc[:n_fft]
+            acc = acc[n_fft:]
             spec = np.fft.fft(chunk * win)
             accum += np.abs(spec) ** 2 / win_pow
             count += 1
@@ -237,18 +257,19 @@ def main() -> int:
     target_freq = parse_freq(env["FREQ"])
     gain = float(env.get("GAIN", 30))
     lo_freq = target_freq + LO_OFFSET
+    antenna = env.get("ANTENNA") or ANTENNA
 
+    dev_args = device_args()
+    remote = "remote" in dev_args
     sys.stderr.write(
         f"am_stream: target={target_freq/1e3:.1f}kHz LO={lo_freq/1e3:.1f}kHz "
-        f"gain={gain} OUT_RATE={OUT_RATE}\n"
+        f"gain={gain} ant={antenna!r} OUT_RATE={OUT_RATE} dev={dev_args!r}\n"
     )
     sys.stderr.flush()
 
-    # SoapySDR Python wrapper expects a "key=value,key=value" string;
-    # passing a dict raises "no match" in this version.
-    sdr = SoapySDR.Device(f"driver={DRIVER}")
+    sdr = SoapySDR.Device(SoapySDR.KwargsFromString(dev_args))
     sdr.setSampleRate(SOAPY_SDR_RX, 0, HW_RATE)
-    sdr.setAntenna(SOAPY_SDR_RX, 0, ANTENNA)
+    sdr.setAntenna(SOAPY_SDR_RX, 0, antenna)
     # Disable the dx-R2's hardware AGC. With both hardware AGC and our software
     # AGC active, the two control loops fight: hardware AGC compresses the IF in
     # ~10ms steps, software AGC reacts to the moving envelope, you get 20-30 dB
@@ -309,7 +330,10 @@ def main() -> int:
     sys.stderr.write("am_stream: -------------------\n")
     sys.stderr.flush()
 
-    rx = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16)
+    # Remote dx-R2: force the IQ onto lossless TCP (SoapyRemote's UDP firehose
+    # drops datagrams → demod artifacts). Harmless/ignored on a local open.
+    stream_args = {"remote:prot": "tcp"} if remote else {}
+    rx = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16, [0], stream_args)
     sdr.activateStream(rx)
 
     # Pre-streaming RFI scan. ~5 s of latency before audio starts, but each

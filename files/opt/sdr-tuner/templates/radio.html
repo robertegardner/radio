@@ -509,7 +509,7 @@
       <button class="btn toggle" id="viz-toggle" title="Audio visualizer — tap the background for fullscreen, double-tap for next pattern" style="display:none">VIZ</button>
       <button class="btn toggle" id="duck-toggle" title="Duck on talk — near-mute commercials/DJ talk, prompt restore on music">DUCK</button>
       <button class="btn toggle" id="mono-toggle" title="Mono — drops the noisy 38 kHz stereo subcarrier; much cleaner on weak/talk stations">MONO</button>
-      <button class="btn toggle" id="ant-toggle" title="FM antenna A/B/C (A=Shakespeare, B=dipole+LNA, C=long-wire). Tap to cycle.">ANT A</button>
+      <button class="btn toggle" id="ant-toggle" title="FM/AM antenna A/B/C (A=Shakespeare, B=dipole+LNA, C=long-wire). Tap to cycle. Strong AM locals are best on A.">ANT A</button>
     </div>
     <div class="ctrl-group">
       <button class="btn primary" id="play-btn" title="Play/Pause">▶</button>
@@ -720,7 +720,8 @@ function savePresetSlot(slot) {
                     stereo: currentStereo, antenna: currentAntenna, label };
   savePresets();
   renderPresets();
-  const ant = currentBand === 'fm' ? ` · ${currentAntenna.slice(-1)}${currentStereo ? '' : '·mono'}` : '';
+  const ant = currentBand === 'fm' ? ` · ${currentAntenna.slice(-1)}${currentStereo ? '' : '·mono'}`
+            : currentBand === 'am' ? ` · ${currentAntenna.slice(-1)}` : '';
   showToast(`Saved to preset ${slot + 1}: ${label}${ant}`);
 }
 
@@ -1083,7 +1084,7 @@ function renderStationsModal() {
     `;
     row.addEventListener('click', () => {
       // Auto-select the best antenna found by the all-antenna scan (FM only).
-      tuneTo(f, modalBand, false, 0, null, modalBand === 'fm' ? (s.antenna || null) : null);
+      tuneTo(f, modalBand, false, 0, null, s.antenna || null);   // FM + AM both honor the scan's best antenna
       $('stations-modal').classList.remove('show');
     });
     target.appendChild(row);
@@ -1176,7 +1177,7 @@ async function pollNowPlaying() {
       const letter = d.antenna.slice(-1);            // 'A' | 'B' | 'C'
       ab.textContent = 'ANT ' + letter;
       ab.classList.toggle('on', letter !== 'A');     // highlight non-default
-      ab.disabled = (currentBand !== 'fm');
+      ab.disabled = (currentBand !== 'fm' && currentBand !== 'am');  // AM picks an antenna too
     }
     // Frequency display
     if (currentFreq) {

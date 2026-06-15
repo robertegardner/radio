@@ -217,7 +217,7 @@ def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0
     )
     if hd:
         content += f"SUBCHANNEL={subchannel}\n"
-    if mode == "wbfm":   # FM antenna A/B/C select (am_stream/hd own their antenna).
+    if mode in ("wbfm", "am"):  # FM + AM antenna A/B/C select (am_stream honors it).
         # QUOTE it — the value has a space ("Antenna A") and stream.sh sources this
         # file; unquoted, `source` runs "A" as a command (exit 127 → restart loop).
         content += f'ANTENNA="{current_antenna()}"\n'
@@ -643,9 +643,10 @@ def api_stereo():
 
 @app.route("/api/antenna", methods=["POST"])
 def api_antenna():
-    """Select the FM antenna port (A = Shakespeare, B = dipole+LNA), then restart
-    so wbfm_stream re-opens on it. Persisted in ui_settings; lands in active.env
-    ANTENNA=. FM-only — has no effect on AM/HD."""
+    """Select the antenna port (A = Shakespeare, B = dipole+LNA, C = long-wire),
+    then restart so the active client (wbfm_stream/am_stream) re-opens on it.
+    Persisted in ui_settings; lands in active.env ANTENNA=. FM + AM (the strong
+    locals are best on A; the long-wire C suits fringe high-band AM). HD ignores it."""
     payload = request.get_json(silent=True) or {}
     ant = str(payload.get("antenna", "")).strip()
     if ant not in ALLOWED_ANTENNAS:
