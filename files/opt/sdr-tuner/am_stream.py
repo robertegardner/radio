@@ -468,6 +468,19 @@ def main() -> int:
                     idx = np.where(mask)[0]
                     peak = idx[np.argmax(acc_spec[idx])]
                     nco_freq_hz = float(freqs[peak])
+                    # Parabolic interpolation around the peak for sub-bin (~1 Hz)
+                    # accuracy. The bins are 12 Hz apart; snapping to the nearest
+                    # leaves up to a 6 Hz residual carrier error, which beats the
+                    # demodulated audio at that rate (an audible low warble). Refine
+                    # using the log-magnitude of the two neighbouring bins.
+                    if 0 < peak < seg - 1:
+                        a0 = np.log(acc_spec[peak - 1] + 1e-20)
+                        a1 = np.log(acc_spec[peak] + 1e-20)
+                        a2 = np.log(acc_spec[peak + 1] + 1e-20)
+                        denom = a0 - 2 * a1 + a2
+                        if abs(denom) > 1e-12:
+                            delta = 0.5 * (a0 - a2) / denom
+                            nco_freq_hz += float(np.clip(delta, -0.5, 0.5)) / (seg * sample_period)
                     fft_locked = True
                     fft_acc = []
                     sys.stderr.write(
