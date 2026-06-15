@@ -225,11 +225,11 @@
 
   /* Controls */
   .controls {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
+    display: flex; flex-wrap: wrap;
+    justify-content: space-between;
     gap: .75rem; align-items: center;
   }
-  .ctrl-group { display: flex; gap: .4rem; }
+  .ctrl-group { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
   .btn {
     background: var(--bg-button);
     border: 1px solid var(--line);
@@ -511,7 +511,6 @@
       <button class="btn toggle" id="mono-toggle" title="Mono — drops the noisy 38 kHz stereo subcarrier; much cleaner on weak/talk stations">MONO</button>
       <button class="btn toggle" id="ant-toggle" title="FM antenna A/B/C (A=Shakespeare, B=dipole+LNA, C=long-wire). Tap to cycle.">ANT A</button>
     </div>
-    <div></div>
     <div class="ctrl-group">
       <button class="btn primary" id="play-btn" title="Play/Pause">▶</button>
       <div class="vol-wrap">
@@ -1405,14 +1404,15 @@ function ensureLevelsMeter() {
   }
   return true;
 }
-function lvlRms(buf) {
-  let s = 0;
-  for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; s += v * v; }
-  return Math.sqrt(s / buf.length);
+function lvlLevel(buf) {
+  // Peak (not RMS) — far livelier movement; RMS sat too low to see.
+  let peak = 0;
+  for (let i = 0; i < buf.length; i++) { const v = Math.abs(buf[i] - 128); if (v > peak) peak = v; }
+  return peak / 128;   // 0..1, ~1 at full scale
 }
-function setLvlFill(id, rms) {
+function setLvlFill(id, level) {
   const fill = document.querySelector('#' + id + ' .lvl-fill');
-  if (fill) fill.style.height = Math.min(100, rms * 180).toFixed(0) + '%';   // ~2x gain for visibility
+  if (fill) fill.style.height = Math.min(100, level * 140).toFixed(0) + '%';
 }
 function startLevels() {
   if (!ensureLevelsMeter() || levelsRaf) return;
@@ -1422,8 +1422,8 @@ function startLevels() {
     const stereo = currentPilot;   // true 19 kHz pilot lock (FM-gated server-side)
     $('levels').classList.toggle('mono', !stereo);
     lvlAnalyserL.getByteTimeDomainData(bufL);
-    setLvlFill('lvl-l', lvlRms(bufL));
-    if (stereo) { lvlAnalyserR.getByteTimeDomainData(bufR); setLvlFill('lvl-r', lvlRms(bufR)); }
+    setLvlFill('lvl-l', lvlLevel(bufL));
+    if (stereo) { lvlAnalyserR.getByteTimeDomainData(bufR); setLvlFill('lvl-r', lvlLevel(bufR)); }
   };
   loop();
 }
