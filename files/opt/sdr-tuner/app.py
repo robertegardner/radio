@@ -192,11 +192,12 @@ def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0
     if band == "am":
         mode, samp, freq_val = "am", "2000000", f"{freq}k"
         # am_stream.py disables the hardware AGC and uses this as a fixed manual
-        # gain. 20 was empirically the sweet spot: KMOX 1120 (50 kW) peaks at
-        # ~0.28 (28% ADC full scale) — plenty of headroom, no compression. At
-        # GAIN=30 with AGC off the dx-R2 starts to overload on the strongest
-        # local AM carriers.
-        gain = 20
+        # gain. On the REMOTE rack path (offset tuning, no HDR) the gain mapping
+        # is inverted vs the old Pi-local default: GAIN=20 ran hot (~+15 dBFS,
+        # clipping) while GAIN=40 sits ~-7 dBFS with clean headroom and identical
+        # ~27 dB station SNR. 40 it is. (The old "20 sweet spot, 30 overloads"
+        # note was the Pi-local HDR path — different signal chain entirely.)
+        gain = 40
     elif hd:
         mode, samp, freq_val = "hd", "200000", f"{freq}M"
         gain = 30

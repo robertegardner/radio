@@ -42,21 +42,29 @@ RFI_STATUS_PATH = Path("/run/sdr-streams/rfi_status.json")
 SRC_ENV = Path("/etc/radio-compute/source-dx-r2.env")
 
 HW_RATE = 2_000_000
-# With HDR mode engaged the dx-R2's HDR signal path eliminates the DC spike
-# that motivated the +500 kHz offset on the non-HDR path. Place the target
-# at DC and let the PLL FFT search take up the small carrier-tolerance slack.
-LO_OFFSET = 0
+# Offset tuning: place the hardware LO +500 kHz above the target so the carrier
+# lands at -500 kHz in baseband — well clear of the direct-conversion DC spike,
+# which the Stage-1 100 kHz lowpass then rejects. The NCO below shifts the
+# carrier back to DC for synchronous demod. This is the classic non-HDR path.
+#
+# WHY NOT HDR: the dx-R2's HDR mode would let us tune the carrier straight to DC
+# (no offset needed), but HDR is engaged via writeSetting on the SoapyRemote
+# *server*, which already holds the device for the rack — toggling it from a
+# remote client does not reliably reconfigure the signal path (AM came out as
+# pure static on every antenna while the no-HDR fm/am SCAN sees 30 dB SNR on the
+# same stations). Offset tuning needs no special device mode, so it works
+# identically local or remote.
+LO_OFFSET = 500_000
 ANTENNA = "Antenna C"
 DRIVER = "sdrplay"
 
-# Settings we engage for MW (freq < 30 MHz). hdr_ctrl gives the dx-R2 a
-# dedicated wide-DR signal path centered on MW; dabnotch_ctrl rejects the
-# DAB band (no downside in the US). We deliberately leave rfnotch_ctrl OFF —
-# on the dx-R2 it's a combined MW+FM broadcast notch and would attenuate the
-# band we want to listen to. biasT_ctrl off because Antenna C is a passive
-# long-wire and we don't want DC out the SMA.
+# Settings we engage for MW (freq < 30 MHz). dabnotch_ctrl rejects the DAB band
+# (no downside in the US). rfnotch_ctrl stays OFF — on the dx-R2 it's a combined
+# MW+FM broadcast notch and would attenuate the band we want. biasT_ctrl off
+# (passive antennas). hdr_ctrl OFF: it doesn't reconfigure reliably over
+# SoapyRemote (see LO_OFFSET note); offset tuning replaces it.
 MW_SETTINGS = (
-    ("hdr_ctrl", "true"),
+    ("hdr_ctrl", "false"),
     ("dabnotch_ctrl", "true"),
     ("biasT_ctrl", "false"),
 )
