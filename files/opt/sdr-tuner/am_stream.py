@@ -381,7 +381,7 @@ def main() -> int:
     nco_phase = 0.0
     fft_acc = []
     fft_locked = False
-    fft_target_samples = OUT_RATE // 2  # 0.5 sec of post-filter data
+    fft_target_samples = OUT_RATE       # 1 sec of post-filter data (Welch-averaged)
     sample_period = 1.0 / OUT_RATE
 
     # Block-rate normalization (the e45da31 version). The per-sample dual EMA
@@ -443,13 +443,30 @@ def main() -> int:
                 total = sum(len(b) for b in fft_acc)
                 if total >= fft_target_samples:
                     buf = np.concatenate(fft_acc)
-                    n_fft = 1 << (buf.size.bit_length() - 1)  # largest pow2 ≤ buf
-                    buf = buf[:n_fft]
-                    spec = np.fft.fft(buf * np.hanning(n_fft).astype(np.complex64))
-                    freqs = np.fft.fftfreq(n_fft, sample_period)
-                    mask = np.abs(freqs) < 200  # search ±200 Hz around DC
+                    # Search ±2 kHz, not ±200 Hz: with offset tuning over
+                    # SoapyRemote the dx-R2 LO is ~800 Hz inaccurate, so the
+                    # carrier lands ~+800 Hz off DC (measured +873 Hz @1120, +789
+                    # @960). A ±200 Hz window missed it entirely and locked onto
+                    # near-DC noise → de-rotated by the wrong frequency → static.
+                    #
+                    # AVERAGE the spectrum (Welch) over the lock window instead of
+                    # one big FFT: the carrier is a STEADY tone so it accumulates,
+                    # while program sidebands move and average down. A single FFT
+                    # let a loud audio moment's sideband (e.g. +1916 Hz) outrank
+                    # the carrier → wrong lock. Segmented averaging fixes that.
+                    seg = 4096
+                    win = np.hanning(seg).astype(np.float32)
+                    acc_spec = np.zeros(seg, dtype=np.float64)
+                    nseg = 0
+                    for s in range(0, len(buf) - seg, seg // 2):
+                        acc_spec += np.abs(np.fft.fft(buf[s:s + seg] * win)) ** 2
+                        nseg += 1
+                    if nseg == 0:  # window shorter than a segment — fall back
+                        acc_spec = np.abs(np.fft.fft(buf[:seg] * win[:len(buf)] if len(buf) < seg else buf[:seg] * win)) ** 2
+                    freqs = np.fft.fftfreq(seg, sample_period)
+                    mask = np.abs(freqs) < 2000
                     idx = np.where(mask)[0]
-                    peak = idx[np.argmax(np.abs(spec[idx]))]
+                    peak = idx[np.argmax(acc_spec[idx])]
                     nco_freq_hz = float(freqs[peak])
                     fft_locked = True
                     fft_acc = []
