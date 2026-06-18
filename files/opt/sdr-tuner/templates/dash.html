@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ site_title }} — Stack</title>
+<style>
+  :root { --amber:#ffae3a; --amber-dim:#9a6a1f; --bg:#0c0a08; --panel:#16120d;
+          --line:#2a2117; --text:#e8e0d4; --faint:#8a7e6c; --live:#4ad07a; --warn:#e0613a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:'Courier New',ui-monospace,monospace; letter-spacing:.02em; }
+  header { padding:.8rem 1rem; border-bottom:1px solid var(--line); display:flex;
+           align-items:center; gap:1rem; }
+  header h1 { font-size:1rem; margin:0; color:var(--amber); text-shadow:0 0 8px var(--amber); }
+  header .nav a { color:var(--faint); text-decoration:none; margin-left:1rem; font-size:.8rem; }
+  header .nav a:hover { color:var(--amber); }
+  .wrap { max-width:880px; margin:0 auto; padding:1rem; }
+  /* active strip */
+  .strip { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:1rem; }
+  .badge { display:flex; align-items:center; gap:.4rem; background:var(--panel);
+           border:1px solid var(--line); border-radius:6px; padding:.35rem .6rem; font-size:.8rem; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#444; }
+  .dot.live { background:var(--live); box-shadow:0 0 6px var(--live); }
+  .badge .lbl { color:var(--faint); text-transform:uppercase; letter-spacing:.06em; }
+  .badge .lc { color:var(--amber-dim); font-size:.72rem; }
+  /* source cards */
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:.75rem; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:.8rem;
+          cursor:pointer; transition:border-color .15s,background .15s; }
+  .card:hover { border-color:var(--amber-dim); }
+  .card.playing { border-color:var(--amber); background:#221a10; box-shadow:0 0 12px rgba(255,174,58,.12); }
+  .card .src { font-size:1.1rem; color:var(--amber); font-weight:600; }
+  .card .meta { font-size:.78rem; color:var(--faint); margin-top:.3rem; min-height:1.1em; }
+  .card .st { font-size:.72rem; margin-top:.5rem; display:flex; align-items:center; gap:.4rem; }
+  .card .st .pre { color:var(--warn); }
+  .player { margin-top:1.2rem; background:var(--panel); border:1px solid var(--line);
+            border-radius:8px; padding:.8rem; }
+  .player .nowsrc { color:var(--amber); font-size:.9rem; margin-bottom:.5rem; }
+  audio { width:100%; }
+  .foot { color:var(--faint); font-size:.72rem; margin-top:1rem; }
+  .foot a { color:var(--amber-dim); }
+  .err { color:var(--warn); font-size:.8rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>◆ {{ site_title }} — STACK</h1>
+  <div class="nav">
+    <a href="/radio">FM tuner</a>
+    <a href="https://wx.rg2.io">weather</a>
+    <a href="https://ems.rg2.io">scanner</a>
+  </div>
+</header>
+<div class="wrap">
+  <div class="strip" id="strip"></div>
+  <div class="cards" id="cards"></div>
+  <div class="player">
+    <div class="nowsrc" id="nowsrc">— select a source —</div>
+    <audio id="audio" controls preload="none"></audio>
+  </div>
+  <div class="foot" id="foot">
+    Phase-0 prototype · polls <code>/api/stack-state</code> ·
+    contention is advisory (tuning P25/ATC preempts NOAA; AM-on-B/C preempts FM).
+    Tune controls land in Phase 1. See <code>docs/UNIFIED_GUI_DESIGN.md</code>.
+  </div>
+</div>
+<script>
+const ICECAST = "https://icecast.rg2.io";
+const LABELS = { fm:"FM", am:"AM", noaa:"NOAA", p25:"P25", atc:"ATC" };
+const audio = document.getElementById('audio');
+let playingId = null;
+
+function deviceLine(s, devices) {
+  const d = devices[s.device] || {};
+  let line = (s.device||"").toUpperCase();
+  if (s.id === 'fm' || s.id === 'am') line += s.freq ? ` · ${s.freq}${s.id==='am'?'kHz':'MHz'}` : '';
+  if (s.antenna) line += ` · ${s.antenna.replace('Antenna ','')}`;
+  return line;
+}
+
+async function refresh() {
+  let data;
+  try { data = await (await fetch('/api/stack-state')).json(); }
+  catch (e) { document.getElementById('strip').innerHTML =
+                `<span class="err">stack-state unreachable: ${e}</span>`; return; }
+  const devices = data.devices || {};
+  // active strip
+  document.getElementById('strip').innerHTML = (data.streams||[]).map(s => `
+    <div class="badge"><span class="dot ${s.live?'live':''}"></span>
+      <span class="lbl">${LABELS[s.id]||s.id}</span>
+      ${s.live?`<span class="lc">●${s.listeners}</span>`:'<span class="lc">idle</span>'}
+    </div>`).join('') +
+    (data.icecast_ok ? '' : '<span class="err">· icecast down</span>');
+  // cards
+  document.getElementById('cards').innerHTML = (data.streams||[]).map(s => {
+    const pre = s.preempts ? `<span class="pre">⚠ preempts ${s.preempts.join(',').toUpperCase()}</span>` : '';
+    return `<div class="card ${playingId===s.id?'playing':''}" data-mount="${s.mount}" data-id="${s.id}">
+      <div class="src">${LABELS[s.id]||s.id}</div>
+      <div class="meta">${deviceLine(s, devices)}</div>
+      <div class="st"><span class="dot ${s.live?'live':''}"></span>
+        ${s.live?`live · ${s.listeners} listening`:'idle'} ${pre}</div>
+    </div>`;
+  }).join('');
+  document.querySelectorAll('.card').forEach(c => c.onclick = () => play(c.dataset.id, c.dataset.mount));
+}
+
+function play(id, mount) {
+  playingId = id;
+  document.getElementById('nowsrc').textContent = `▶ ${LABELS[id]||id}  (${mount})`;
+  audio.src = ICECAST + mount + '?_=' + Date.now();
+  audio.play().catch(()=>{});
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

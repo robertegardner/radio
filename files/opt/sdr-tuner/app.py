@@ -418,6 +418,101 @@ def settings_save():
 
 
 # ---------------------------------------------------------------------------
+# Unified dashboard (Phase 0): stack-state aggregator + shell
+# ---------------------------------------------------------------------------
+ICECAST_STATUS_URL = "http://192.168.6.82:8000/status-json.xsl"
+
+# mount -> (source id, band, device). /fm.mp3 is shared by FM + AM on the dx-R2
+# (band/device resolved at runtime from active.env MODE+SOURCE). The R2 mounts are
+# mutually exclusive — NOAA is the default, P25/ATC preempt it.
+_STREAM_MAP = [
+    ("/fm.mp3",          "fm",   "fm",   "dx-r2"),
+    ("/wx.mp3",          "noaa", "noaa", "r2"),
+    ("/ems.mp3",         "p25",  "p25",  "r2"),
+    ("/scanner-atc.mp3", "atc",  "atc",  "r2"),
+]
+
+
+def _active_source() -> str:
+    """SOURCE= from active.env (dx-r2|hf-plus); '' if absent."""
+    try:
+        for line in ENV_PATH.read_text().splitlines():
+            if line.startswith("SOURCE="):
+                return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return ""
+
+
+def _icecast_mounts() -> dict:
+    """Live mounts from the rack Icecast status-json: mount -> {listeners, title}."""
+    out = {}
+    try:
+        ice = requests.get(ICECAST_STATUS_URL, timeout=4).json().get("icestats", {})
+        srcs = ice.get("source", [])
+        if isinstance(srcs, dict):
+            srcs = [srcs]
+        for s in srcs:
+            url = s.get("listenurl") or ""
+            mount = "/" + url.rsplit("/", 1)[-1] if url else s.get("mount", "")
+            out[mount] = {"listeners": s.get("listeners", 0),
+                          "title": s.get("title") or s.get("server_name") or ""}
+    except Exception:  # noqa: BLE001 — icecast unreachable is a normal runtime state
+        pass
+    return out
+
+
+@app.route("/api/stack-state")
+def api_stack_state():
+    """Read-only aggregate of what's live across the whole stack: icecast mounts +
+    per-device role/contention. The unified GUI's active badges + preempt confirms
+    are pure functions of this (see docs/UNIFIED_GUI_DESIGN.md). Phase 0."""
+    live = _icecast_mounts()
+    freq, band, _hd, _sub = current_tune()
+    src = _active_source()
+    # /ems.mp3 stays published via liquidsoap mksafe even when op25 isn't decoding,
+    # so it's the R2's FALLBACK; /wx.mp3 + /scanner-atc.mp3 are only live when their
+    # service actually holds the single-tuner R2. (True P25-decode state — vs an
+    # idle silent mount — needs the scanner-api; that's the Phase-1 gateway.)
+    r2_role = ("noaa" if "/wx.mp3" in live else
+               "atc" if "/scanner-atc.mp3" in live else
+               "p25" if "/ems.mp3" in live else "idle")
+    streams = []
+    for mount, sid, sband, dev in _STREAM_MAP:
+        m = live.get(mount)
+        e = {"id": sid, "band": sband, "mount": mount, "device": dev,
+             "listeners": (m or {}).get("listeners", 0), "title": (m or {}).get("title", "")}
+        if dev == "r2":
+            e["live"] = (r2_role == sid)          # which source actually holds the R2
+            if sid != "noaa":
+                e["preempts"] = ["noaa"]
+        else:
+            e["live"] = m is not None
+        if mount == "/fm.mp3":
+            # this mount carries FM or AM per the current tune; AM may be on the
+            # HF+ (SOURCE=hf-plus), which frees the dx-R2.
+            e["band"] = e["id"] = band or "fm"
+            e["freq"] = freq
+            e["antenna"] = current_antenna()
+            e["device"] = "hf-plus" if (band == "am" and src == "hf-plus") else "dx-r2"
+        streams.append(e)
+    fm_on_dxr2 = "/fm.mp3" in live and not (band == "am" and src == "hf-plus")
+    devices = {
+        "dx-r2":   {"role": (band or "fm") if fm_on_dxr2 else "idle", "busy": fm_on_dxr2},
+        "hf-plus": {"role": "am" if (band == "am" and src == "hf-plus" and "/fm.mp3" in live) else "idle"},
+        "r2":      {"role": r2_role, "preemptible": ["p25", "atc"]},
+    }
+    return jsonify({"streams": streams, "devices": devices, "icecast_ok": bool(live)})
+
+
+@app.route("/dash")
+def dash():
+    """Unified dashboard shell (Phase 0 prototype) — renders /api/stack-state."""
+    return render_template("dash.html",
+                           site_title=ui_settings.load().get("site_title", "SDR"))
+
+
+# ---------------------------------------------------------------------------
 # JSON API
 # ---------------------------------------------------------------------------
 @app.route("/api/status")
