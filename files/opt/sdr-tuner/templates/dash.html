@@ -94,17 +94,18 @@
     <h2>NOAA Weather Radio</h2><div class="sub">162.550 · discone (R2) · /wx.mp3 · SAME/EAS alerts → wx.rg2.io</div>
     <div class="state" id="noaa-state"></div>
     <div class="row"><button class="btn primary" onclick="play('noaa','/wx.mp3')">▶ Listen</button>
+      <button class="btn" id="noaa-activate" onclick="r2mode('noaa')">Set R2 → NOAA</button>
       <a class="btn" href="https://wx.rg2.io" target="_blank">Alert page ↗</a></div>
-    <div class="note">The R2's <b>24/7 default</b> (always-listening for alerts). <span class="p4">Switching the R2 to P25/ATC is the Phase-4 coordinator</span> — not yet wired here.</div>
+    <div class="note">The R2's <b>24/7 default</b> (always-listening for alerts). The R2-mode coordinator returns here when you stop P25.</div>
   </div>
 
   <div class="panel" id="p-p25">
     <h2>P25 — MOSWIN</h2><div class="sub">discone (R2) · /ems.mp3 · trunk-following scanner</div>
     <div class="state" id="p25-state"></div>
-    <div class="row"><button class="btn primary" onclick="play('p25','/ems.mp3')">▶ Listen</button>
-      <a class="btn" href="https://scanner.rg2.io" target="_blank">op25 console ↗</a>
-      <a class="btn" href="https://ems.rg2.io" target="_blank">scanner UI ↗</a></div>
-    <div class="note">On-demand — <b>preempts NOAA</b> on the R2. <span class="p4">Activation is the Phase-4 coordinator.</span> Live status above proxies through the new <code>/api/scanner</code> gateway.</div>
+    <div class="row"><button class="btn" id="p25-activate" onclick="r2mode('p25')">⚡ Activate P25 (preempt R2)</button>
+      <button class="btn primary" onclick="play('p25','/ems.mp3')">▶ Listen</button>
+      <a class="btn" href="https://scanner.rg2.io" target="_blank">op25 console ↗</a></div>
+    <div class="note"><b>Preempts NOAA</b> on the R2 (single-tuner). Activating bounces the source fresh + cold-starts op25 — the control channel takes <b>~60–90 s</b> to lock (tsbks climb). Stop = switch back to NOAA. Live status proxies through the <code>/api/scanner</code> gateway.</div>
   </div>
 
   <div class="panel" id="p-atc">
@@ -148,6 +149,16 @@ document.getElementById('p-fm').classList.add('on');
 function play(id,mount){ playingId=id;
   document.getElementById('nowsrc').textContent=`▶ ${id.toUpperCase()}  (${mount})`;
   audio.src=ICECAST+mount+'?_='+Date.now(); audio.play().catch(()=>{}); }
+
+// R2-mode coordinator: NOAA <-> P25 (single-tuner discone; preempt on demand).
+async function r2mode(m){
+  if(m==='p25' && !confirm('Activate P25? This PREEMPTS NOAA on the R2 (weather alerts pause) and op25 takes ~60-90s to lock the control channel.')) return;
+  if(m==='noaa' && !confirm('Switch the R2 back to NOAA? This stops P25.')) return;
+  const el=document.getElementById(m+'-activate'); if(el){ el.textContent='switching…'; el.disabled=true; }
+  try{ const r=await fetch('/api/scanner/r2/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
+       const j=await r.json(); if(!j.ok) throw new Error(j.msg||j.error||'failed'); }
+  catch(e){ alert('R2 switch failed: '+e.message); }
+}
 
 async function tuneFM(){
   const f=document.getElementById('fm-freq').value.trim(); if(!f) return;
@@ -195,8 +206,14 @@ async function refresh(){
   });
   // P25 live talkgroup via the gateway
   try{ const ss=await(await fetch('/api/scanner/status')).json();
-       const tg=ss.active||ss.talkgroup||ss.status; if(tg){
-         document.getElementById('p25-state').innerHTML+=` <span class="kv">· active: <b>${tg}</b></span>`; } }catch(e){}
+       const tg=(ss.current&&ss.current.detail)||ss.active||''; if(tg){
+         document.getElementById('p25-state').innerHTML+=` <span class="kv">· <b>${tg}</b></span>`; } }catch(e){}
+  // R2-mode coordinator state -> reflect on the activate buttons
+  try{ const r2=await(await fetch('/api/scanner/r2/state')).json(); const m=r2.mode;
+       const na=document.getElementById('noaa-activate'), pa=document.getElementById('p25-activate');
+       if(na){ na.disabled=false; na.classList.toggle('on',m==='noaa'); na.textContent=(m==='noaa')?'R2: NOAA ✓':'Set R2 → NOAA'; }
+       if(pa){ pa.disabled=false; pa.classList.toggle('on',m==='p25'); pa.textContent=(m==='p25')?'P25 active ✓':'⚡ Activate P25 (preempt R2)'; }
+  }catch(e){}
 }
 refresh(); setInterval(refresh,3000);
 </script>
