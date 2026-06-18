@@ -172,12 +172,10 @@
   <div class="panel src-atc" id="p-atc">
     <div class="phead"><span class="ic">✈️</span><h2>ATC / Monitor airband</h2></div>
     <div class="sub">discone (R2) · AM · /scanner-atc.mp3</div>
-    <div class="row"><div class="chips">
-      <span class="chip" onclick="atcPreset('120.55')">AWOS 120.55</span>
-      <span class="chip" onclick="atcPreset('119.0')">Tower 119.0</span>
-      <span class="chip" onclick="atcPreset('133.65')">Approach 133.65</span>
-      <span class="chip" onclick="atcPreset('121.6')">Ground 121.6</span></div></div>
-    <div class="row"><input type="number" id="atc-freq" step="0.025" placeholder="120.55"><span class="kv">MHz</span>
+    <div class="row"><div class="chips" id="atc-presets"></div>
+      <button class="btn" id="atc-edit-btn" onclick="toggleAtcEdit()" style="font-size:.78rem;margin-left:auto">✎ Edit</button></div>
+    <div id="atc-editor" class="ab-box" style="display:none"></div>
+    <div class="row"><input type="number" id="atc-freq" step="0.025" placeholder="125.525"><span class="kv">MHz</span>
       <button class="btn" id="atc-activate" onclick="atcTune()">⚡ Tune ATC (preempt R2)</button></div>
     <div class="state" id="atc-state"></div>
     <div class="row"><button class="btn primary" onclick="play('atc','/scanner-atc.mp3')">▶ Listen</button>
@@ -281,6 +279,52 @@ function setAmAnt(a){ amAnt=a; document.querySelectorAll('.am-ant').forEach(b=>b
 document.querySelectorAll('.am-ant').forEach(b=>b.onclick=()=>setAmAnt(b.dataset.ant)); setAmAnt('Antenna A');
 function atcPreset(f){ document.getElementById('atc-freq').value=f; atcTune(); }
 
+// ATC presets — server-persisted (/api/atc-presets), editable in place.
+let atcPresetsData=[];
+const _esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+async function loadAtcPresets(){
+  try{ const d=await(await fetch('/api/atc-presets')).json(); atcPresetsData=d.presets||[]; }catch(e){ atcPresetsData=[]; }
+  renderAtcPresets();
+}
+function renderAtcPresets(){
+  document.getElementById('atc-presets').innerHTML = atcPresetsData.length
+    ? atcPresetsData.map(p=>`<span class="chip" onclick="atcPreset('${_esc(p.freq)}')" title="${_esc(p.sub)}">${_esc(p.label)} <b>${_esc(p.freq)}</b></span>`).join('')
+    : '<span class="kv">no presets — tap ✎ Edit to add</span>';
+}
+function toggleAtcEdit(){
+  const ed=document.getElementById('atc-editor'); const show=ed.style.display==='none';
+  ed.style.display=show?'':'none';
+  document.getElementById('atc-edit-btn').textContent=show?'✕ Close':'✎ Edit';
+  if(show) renderAtcEditor();
+}
+function renderAtcEditor(){
+  const rows=atcPresetsData.map((p,i)=>`<div class="row">
+    <input type="text" class="ed-label" data-i="${i}" value="${_esc(p.label)}" placeholder="label" style="width:9rem">
+    <input type="text" class="ed-freq" data-i="${i}" value="${_esc(p.freq)}" placeholder="MHz" style="width:5.5rem">
+    <span class="kv">MHz</span><button class="btn" onclick="atcEditDel(${i})" title="delete">✕</button></div>`).join('');
+  document.getElementById('atc-editor').innerHTML=
+    `<div class="ab-title">✎ Edit ATC presets · AM airband</div>${rows||'<div class="kv">none yet</div>'}
+     <div class="row"><button class="btn" onclick="atcEditAdd()">+ Add preset</button>
+       <button class="btn primary" onclick="atcEditSave()">Save</button>
+       <button class="btn" onclick="toggleAtcEdit()">Cancel</button></div>`;
+}
+function _syncAtcEditor(){
+  document.querySelectorAll('#atc-editor .ed-label').forEach(el=>{const i=+el.dataset.i; if(atcPresetsData[i]) atcPresetsData[i].label=el.value.trim();});
+  document.querySelectorAll('#atc-editor .ed-freq').forEach(el=>{const i=+el.dataset.i; if(atcPresetsData[i]) atcPresetsData[i].freq=el.value.trim().replace(/[Mm]$/,'');});
+}
+function atcEditAdd(){ _syncAtcEditor(); atcPresetsData.push({label:'',freq:'',sub:''}); renderAtcEditor(); }
+function atcEditDel(i){ _syncAtcEditor(); atcPresetsData.splice(i,1); renderAtcEditor(); }
+async function atcEditSave(){
+  _syncAtcEditor();
+  const presets=atcPresetsData.filter(p=>p.label&&p.freq);
+  try{ const r=await fetch('/api/atc-presets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({presets})});
+       const j=await r.json(); if(!j.ok) throw new Error(j.error||'save failed');
+       atcPresetsData=j.presets||presets; renderAtcPresets();
+       document.getElementById('atc-editor').style.display='none';
+       document.getElementById('atc-edit-btn').textContent='✎ Edit';
+  }catch(e){ alert('Save failed: '+e.message); }
+}
+
 function stateLine(s){
   if(!s) return '<span class="dot"></span> unknown';
   const live=s.live?`<span class="dot live"></span> <b>LIVE</b> · ${s.listeners} listening`
@@ -338,6 +382,7 @@ async function pollDbg(){
     if(added) log.scrollTop=log.scrollHeight;
   }catch(e){}
 }
+loadAtcPresets();
 refresh(); setInterval(refresh,3000);
 </script>
 </body>

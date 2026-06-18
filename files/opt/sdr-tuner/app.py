@@ -655,6 +655,69 @@ def api_abcompare_stop():
 
 
 # ---------------------------------------------------------------------------
+# ATC / airband presets — user-editable, persisted server-side (shared across
+# devices). Seeded from the V1 scanner aviation list; the /dash ATC tab renders
+# + edits these. Freq is MHz (the ATC tune appends "M"); mode is always AM.
+# ---------------------------------------------------------------------------
+ATC_PRESETS_PATH = Path("/var/lib/sdr-streams/atc_presets.json")
+DEFAULT_ATC_PRESETS = [
+    {"label": "KCGI Tower",      "freq": "125.525",  "sub": "primary"},
+    {"label": "KCGI Ground",     "freq": "121.6",    "sub": "0700–1700"},
+    {"label": "KCGI ATIS/ASOS",  "freq": "120.55",   "sub": "test — may be phone-only"},
+    {"label": "Memphis Center",  "freq": "131.36",   "sub": "strongest ARTCC sector"},
+    {"label": "Memphis Center",  "freq": "132.5363", "sub": "verified ARTCC sector"},
+    {"label": "Memphis ARTCC",   "freq": "133.65",   "sub": "Paducah RCAG"},
+    {"label": "Emergency Guard", "freq": "121.5",    "sub": "monitored"},
+]
+
+
+def _load_atc_presets():
+    try:
+        data = json.loads(ATC_PRESETS_PATH.read_text())
+        if isinstance(data, dict):
+            data = data.get("presets", [])
+        if isinstance(data, list):
+            return data
+    except (OSError, ValueError):
+        pass
+    _save_atc_presets(DEFAULT_ATC_PRESETS)
+    return DEFAULT_ATC_PRESETS
+
+
+def _save_atc_presets(presets):
+    ATC_PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ATC_PRESETS_PATH.write_text(json.dumps({"presets": presets}, indent=2))
+
+
+@app.route("/api/atc-presets", methods=["GET", "POST", "PUT"])
+def api_atc_presets():
+    if request.method == "GET":
+        return jsonify({"presets": _load_atc_presets()})
+    raw = (request.get_json(silent=True) or {}).get("presets")
+    if not isinstance(raw, list):
+        return jsonify({"ok": False, "error": "presets (list) required"}), 400
+    clean = []
+    for p in raw:
+        if not isinstance(p, dict):
+            continue
+        label = str(p.get("label", "")).strip()
+        freq = str(p.get("freq", "")).strip().rstrip("Mm")
+        if not label or not freq:
+            continue
+        try:
+            float(freq)
+        except ValueError:
+            continue
+        clean.append({"label": label, "freq": freq, "sub": str(p.get("sub", "")).strip()})
+    try:
+        _save_atc_presets(clean)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    debug_event("radio", "ATC presets saved", f"{len(clean)} presets")
+    return jsonify({"ok": True, "presets": clean})
+
+
+# ---------------------------------------------------------------------------
 # JSON API
 # ---------------------------------------------------------------------------
 @app.route("/api/status")
