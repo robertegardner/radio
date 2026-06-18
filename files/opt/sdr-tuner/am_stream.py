@@ -28,6 +28,7 @@ chain:
 Reads FREQ and GAIN from /etc/sdr-streams/active.env.
 """
 import json
+import os
 import signal
 import sys
 import time
@@ -41,40 +42,50 @@ from SoapySDR import SOAPY_SDR_CS16, SOAPY_SDR_RX
 RFI_STATUS_PATH = Path("/run/sdr-streams/rfi_status.json")
 SRC_ENV = Path("/etc/radio-compute/source-dx-r2.env")
 
-HW_RATE = 2_000_000
-# Offset tuning: place the hardware LO +500 kHz above the target so the carrier
-# lands at -500 kHz in baseband — well clear of the direct-conversion DC spike,
-# which the Stage-1 100 kHz lowpass then rejects. The NCO below shifts the
-# carrier back to DC for synchronous demod. This is the classic non-HDR path.
-#
-# WHY NOT HDR: the dx-R2's HDR mode would let us tune the carrier straight to DC
-# (no offset needed), but HDR is engaged via writeSetting on the SoapyRemote
-# *server*, which already holds the device for the rack — toggling it from a
-# remote client does not reliably reconfigure the signal path (AM came out as
-# pure static on every antenna while the no-HDR fm/am SCAN sees 30 dB SNR on the
-# same stations). Offset tuning needs no special device mode, so it works
-# identically local or remote.
-LO_OFFSET = 500_000
-ANTENNA = "Antenna C"
+# Per-source AM demod profiles. The dx-R2 (sdrplay) runs MW at 2 MHz with the
+# classic +500 kHz offset — placing the carrier at -500 kHz in baseband, clear
+# of the direct-conversion DC spike (the Stage-1 lowpass rejects it; the NCO
+# below shifts it back to DC for synchronous demod). The dx-R2 also engages its
+# MW front-end settings; hdr_ctrl stays OFF because it doesn't reconfigure
+# reliably over SoapyRemote (it's engaged on the server, which holds the device
+# for the rack), and offset tuning needs no special device mode. The HF+
+# (airspyhf, YouLoop) caps at 912 ksps, so it runs 768 ksps with a smaller
+# offset, fewer Stage-1 taps, and NO sdrplay-only settings (it has none). Same
+# offset+PLL demod path for both. Selected by SOURCE in active.env (default
+# dx-r2); apply_profile() fills the module globals the demod loop reads.
+PROFILES = {
+    "dx-r2": dict(
+        src_env=Path("/etc/radio-compute/source-dx-r2.env"),
+        driver="sdrplay",
+        hw_rate=2_000_000,
+        decim1=8, decim2=5,            # 2 MHz -> 250 kHz -> 50 kHz
+        lo_offset=500_000,
+        taps1=(63, 100_000, 0.0),      # (num_taps, cutoff_hz, kaiser_beta)
+        taps2=(511, 3_500, 10.0),
+        mw_settings=(("hdr_ctrl", "false"), ("dabnotch_ctrl", "true"), ("biasT_ctrl", "false")),
+        default_antenna="Antenna C",
+        block_complex=32_000,
+    ),
+    "hf-plus": dict(
+        src_env=Path("/etc/radio-compute/source-hf-plus.env"),
+        driver="airspyhf",
+        hw_rate=768_000,
+        decim1=8, decim2=2,            # 768 kHz -> 96 kHz -> 48 kHz
+        lo_offset=30_000,              # < Stage-1 output Nyquist (48 kHz)
+        taps1=(95, 38_000, 0.0),
+        taps2=(511, 3_500, 10.0),
+        mw_settings=(),                # airspyhf exposes no MW front-end settings
+        default_antenna="RX",
+        block_complex=24_000,          # multiple of total decim (16)
+    ),
+}
+
+# Filled in by apply_profile() before the demod loop / startup_rfi_scan read them.
+HW_RATE = DECIM1 = DECIM2 = OUT_RATE = BLOCK_COMPLEX = LO_OFFSET = None
+TAPS1 = TAPS2 = None
 DRIVER = "sdrplay"
-
-# Settings we engage for MW (freq < 30 MHz). dabnotch_ctrl rejects the DAB band
-# (no downside in the US). rfnotch_ctrl stays OFF — on the dx-R2 it's a combined
-# MW+FM broadcast notch and would attenuate the band we want. biasT_ctrl off
-# (passive antennas). hdr_ctrl OFF: it doesn't reconfigure reliably over
-# SoapyRemote (see LO_OFFSET note); offset tuning replaces it.
-MW_SETTINGS = (
-    ("hdr_ctrl", "false"),
-    ("dabnotch_ctrl", "true"),
-    ("biasT_ctrl", "false"),
-)
-
-DECIM1 = 8
-DECIM2 = 5
-OUT_RATE = HW_RATE // (DECIM1 * DECIM2)  # 50_000
-
-# Block sized so total decimation (40) divides cleanly — no per-block rate drift.
-BLOCK_COMPLEX = 32_000
+MW_SETTINGS = ()
+ANTENNA = "Antenna C"
 
 
 def lowpass_taps(num_taps: int, cutoff: float, fs: float, beta: float = 0.0) -> np.ndarray:
@@ -84,18 +95,32 @@ def lowpass_taps(num_taps: int, cutoff: float, fs: float, beta: float = 0.0) -> 
     return (h / h.sum()).astype(np.float32)
 
 
-# Stage 1: 2 MHz input, decim 8, output 250 kHz. Cutoff 100 kHz keeps anti-alias margin.
-TAPS1 = lowpass_taps(63, 100_000, HW_RATE)
-# Stage 2: 250 kHz input, decim 5, output 50 kHz. Channel filter that isolates one
-# AM station. Empirically on KMOX 1120 there's a ~6.7 kHz tone pulsing at ~10 Hz
-# (likely a station audio-processor artifact or sync subcarrier) that needs to be
-# rejected hard — it sounds like discrete beeps. A loose filter (e.g. 255 taps
-# Kaiser β=8.6 at 4.5 kHz cutoff) is only -50 dB at 6766 Hz, plenty audible.
-# 511 taps with Kaiser β=10 and a 3.5 kHz cutoff puts that tone -105 dB down,
-# fully inaudible, while leaving voice content (1-3 kHz) intact. The tighter
-# cutoff also drops the 7-9 kHz noise floor by ~8 dB, which reduces hiss on
-# weaker stations like KZYM 1220.
-TAPS2 = lowpass_taps(511, 3_500, HW_RATE // DECIM1, beta=10.0)
+def apply_profile(source: str) -> dict:
+    """Resolve the per-source AM profile and set the module globals the demod
+    loop + startup_rfi_scan read. Unknown source falls back to dx-r2.
+
+    Stage 1 anti-aliases for decim1; Stage 2 is the ~3.5 kHz AM channel filter.
+    511 taps Kaiser beta=10 at 3.5 kHz puts the KMOX 1120 ~6.7 kHz audio-
+    processor tone -105 dB down (fully inaudible) while leaving 1-3 kHz voice
+    intact, and drops the 7-9 kHz noise floor ~8 dB (less hiss on weak stations
+    like KZYM 1220)."""
+    global SRC_ENV, HW_RATE, DECIM1, DECIM2, OUT_RATE, BLOCK_COMPLEX, LO_OFFSET
+    global TAPS1, TAPS2, DRIVER, MW_SETTINGS, ANTENNA
+    p = PROFILES.get(source, PROFILES["dx-r2"])
+    SRC_ENV = p["src_env"]
+    HW_RATE = p["hw_rate"]
+    DECIM1, DECIM2 = p["decim1"], p["decim2"]
+    OUT_RATE = HW_RATE // (DECIM1 * DECIM2)
+    BLOCK_COMPLEX = p["block_complex"]
+    LO_OFFSET = p["lo_offset"]
+    DRIVER = p["driver"]
+    MW_SETTINGS = p["mw_settings"]
+    ANTENNA = p["default_antenna"]
+    n1, c1, b1 = p["taps1"]
+    n2, c2, b2 = p["taps2"]
+    TAPS1 = lowpass_taps(n1, c1, HW_RATE, beta=b1)
+    TAPS2 = lowpass_taps(n2, c2, HW_RATE // DECIM1, beta=b2)
+    return p
 
 
 def device_args() -> str:
@@ -261,7 +286,11 @@ def startup_rfi_scan(sdr, rx, lo_freq_hz: float, target_freq_hz: float,
 
 
 def main() -> int:
-    env = read_env()
+    # AM_ACTIVE_ENV lets a bench/test run point at a throwaway env file instead
+    # of the live /etc/sdr-streams/active.env (which drives the production FM).
+    env = read_env(os.environ.get("AM_ACTIVE_ENV", "/etc/sdr-streams/active.env"))
+    source = env.get("SOURCE", "dx-r2")
+    apply_profile(source)  # sets HW_RATE/DECIM/TAPS/LO_OFFSET/ANTENNA/... globals
     target_freq = parse_freq(env["FREQ"])
     gain = float(env.get("GAIN", 30))
     lo_freq = target_freq + LO_OFFSET

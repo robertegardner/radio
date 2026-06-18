@@ -100,16 +100,23 @@ def pilot_state() -> dict:
     return out
 
 
-# FM antenna port on the dx-R2 — all three selectable so you can A/B/C them:
-#   A = Shakespeare 5120 + FM bandpass (the normal FM antenna)
-#   B = 137 MHz dipole + Sawbird LNA (broadband enough to try; LNA may help weak)
-#   C = long-wire (the AM antenna; usually poor for FM, but offered for comparison)
-ALLOWED_ANTENNAS = ["Antenna A", "Antenna B", "Antenna C"]
+# Antenna selector. A/B/C are the dx-R2's three software-selectable ports; "HF+"
+# is a SEPARATE device (the Airspy HF+ on the YouLoop, :55002) and is AM-only —
+# the YouLoop is an HF/MW antenna, so FM/HD always run on the dx-R2. write_env()
+# maps the selection to SOURCE + the hardware antenna name.
+#   A   = Shakespeare 5120 + FM bandpass (the FM antenna)
+#   B   = AM loop + 9:1 balun (added 2026-06-17; strong on AM locals)
+#   C   = long-wire (fringe/high-band AM; the 06-13 dead-feed suspect)
+#   HF+ = Airspy HF+ + YouLoop (AM only; contention-free — its own device)
+DXR2_ANTENNAS    = ["Antenna A", "Antenna B", "Antenna C"]
+HFPLUS_ANTENNA   = "HF+"
+ALLOWED_ANTENNAS = DXR2_ANTENNAS + [HFPLUS_ANTENNA]
 DEFAULT_ANTENNA  = "Antenna A"
 
 
 def current_antenna() -> str:
-    """Persisted FM antenna, clamped to the allowlist. Lands in active.env ANTENNA="""
+    """Persisted antenna, clamped to the allowlist. write_env() maps it to
+    SOURCE + the hardware antenna; lands in active.env as SOURCE= + ANTENNA=."""
     a = ui_settings.load().get("antenna", DEFAULT_ANTENNA)
     return a if a in ALLOWED_ANTENNAS else DEFAULT_ANTENNA
 
@@ -189,15 +196,22 @@ def annotate_am(stations):
 
 
 def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0):
+    antenna = current_antenna()
+    # The HF+ (YouLoop) is an AM-only source; FM/HD always run on the dx-R2.
+    use_hf = (band == "am" and antenna == HFPLUS_ANTENNA)
+    source = "hf-plus" if use_hf else "dx-r2"
+    # Hardware antenna the device opens: the HF+'s single "RX", or a dx-R2 port
+    # (fall back to A if "HF+" is somehow selected while on FM/HD).
+    hw_antenna = "RX" if use_hf else (antenna if antenna in DXR2_ANTENNAS else DEFAULT_ANTENNA)
+
     if band == "am":
         mode, samp, freq_val = "am", "2000000", f"{freq}k"
-        # am_stream.py disables the hardware AGC and uses this as a fixed manual
-        # gain. On the REMOTE rack path (offset tuning, no HDR) the gain mapping
-        # is inverted vs the old Pi-local default: GAIN=20 ran hot (~+15 dBFS,
-        # clipping) while GAIN=40 sits ~-7 dBFS with clean headroom and identical
-        # ~27 dB station SNR. 40 it is. (The old "20 sweet spot, 30 overloads"
-        # note was the Pi-local HDR path — different signal chain entirely.)
-        gain = 40
+        # am_stream.py disables hardware AGC and uses GAIN as a fixed manual gain.
+        # dx-R2 (remote, offset tuning, no HDR): GAIN=40 sits ~-7 dBFS clean
+        # (GAIN=20 ran hot/clipping). HF+ YouLoop: GAIN=30 is the proven clean
+        # point (2026-06-17 bring-up). am_stream picks HW_RATE/decimation from
+        # SOURCE, so SAMP here is vestigial for AM.
+        gain = 30 if use_hf else 40
     elif hd:
         mode, samp, freq_val = "hd", "200000", f"{freq}M"
         gain = 30
@@ -214,14 +228,15 @@ def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0
         f"BITRATE={current_bitrate()}\n"
         f"STEREO={'1' if current_stereo() else '0'}\n"
         f"MOUNT=fm.mp3\n"
+        f"SOURCE={source}\n"   # am_stream.py + stream.sh's AM ffmpeg rate key off this
         f"ICECAST_PASS={ICECAST_PASS}\n"
     )
     if hd:
         content += f"SUBCHANNEL={subchannel}\n"
-    if mode in ("wbfm", "am"):  # FM + AM antenna A/B/C select (am_stream honors it).
+    if mode in ("wbfm", "am"):  # FM + AM antenna select (wbfm_stream/am_stream honor it).
         # QUOTE it — the value has a space ("Antenna A") and stream.sh sources this
         # file; unquoted, `source` runs "A" as a command (exit 127 → restart loop).
-        content += f'ANTENNA="{current_antenna()}"\n'
+        content += f'ANTENNA="{hw_antenna}"\n'
     ENV_PATH.write_text(content)
 
 
@@ -347,7 +362,12 @@ def tune():
         subchannel = int(request.form.get("subchannel", "0") or "0")
     except ValueError:
         subchannel = 0
+    # The admin AM table's Tune button passes the best antenna found by the scan
+    # (A/B/C/HF+); persist it before write_env so the tune lands on it.
+    ant = request.form.get("antenna", "").strip()
     try:
+        if ant in ALLOWED_ANTENNAS:
+            ui_settings.save({"antenna": ant})
         write_env(freq, band, hd, subchannel)
     except OSError as e:
         app.logger.error("write_env failed: %s", e)
