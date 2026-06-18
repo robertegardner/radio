@@ -600,6 +600,61 @@ def scanner_gateway(subpath):
 
 
 # ---------------------------------------------------------------------------
+# Live A/B antenna comparison: same AM station on two devices at once — HF+
+# YouLoop (-> /am-a.mp3) vs dx-R2 Antenna B (-> /am-b.mp3) — for an instant
+# in-GUI A|B switch. The dx-R2 side preempts FM (single tuner); stop restores it.
+# ---------------------------------------------------------------------------
+AB_ENV = {"a": Path("/etc/sdr-streams/am-compare-a.env"),
+          "b": Path("/etc/sdr-streams/am-compare-b.env")}
+AB_LABELS = {"a": "HF+ YouLoop", "b": "dx-R2 loop+balun (Ant B)"}
+
+
+def _ab_freq():
+    try:
+        for line in AB_ENV["a"].read_text().splitlines():
+            if line.startswith("FREQ="):
+                return line.split("=", 1)[1].strip().strip('"').rstrip("kK")
+    except OSError:
+        return None
+    return None
+
+
+@app.route("/api/abcompare/state")
+def api_abcompare_state():
+    a, b = is_active("am-compare-a.service"), is_active("am-compare-b.service")
+    return jsonify({"active": a == "active" or b == "active", "a": a, "b": b,
+                    "freq": _ab_freq(), "labels": AB_LABELS})
+
+
+@app.route("/api/abcompare/start", methods=["POST"])
+def api_abcompare_start():
+    freq = str((request.get_json(silent=True) or {}).get("freq", "")).strip().rstrip("kK")
+    if not freq:
+        return jsonify({"ok": False, "error": "freq (kHz) required"}), 400
+    try:
+        AB_ENV["a"].write_text(f'SOURCE=hf-plus\nFREQ={freq}k\nGAIN=30\nANTENNA="RX"\n')
+        AB_ENV["b"].write_text(f'SOURCE=dx-r2\nFREQ={freq}k\nGAIN=40\nANTENNA="Antenna B"\n')
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    sysctl("stop", "fm-watch.timer")          # the dx-R2 side preempts FM
+    sysctl("stop", SERVICE)
+    sysctl("start", "am-compare-a.service")
+    sysctl("start", "am-compare-b.service")
+    debug_event("radio", "A/B compare START", f"{freq} kHz · HF+ vs dx-R2/B (FM off)")
+    return jsonify({"ok": True, "freq": freq})
+
+
+@app.route("/api/abcompare/stop", methods=["POST"])
+def api_abcompare_stop():
+    sysctl("stop", "am-compare-a.service")
+    sysctl("stop", "am-compare-b.service")
+    sysctl("start", SERVICE)                  # restore FM
+    sysctl("start", "fm-watch.timer")
+    debug_event("radio", "A/B compare STOP", "FM restored")
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # JSON API
 # ---------------------------------------------------------------------------
 @app.route("/api/status")

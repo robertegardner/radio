@@ -50,6 +50,9 @@
   .state { font-size:.82rem; margin:.5rem 0; display:flex; align-items:center; gap:.45rem; }
   .note { color:var(--faint); font-size:.76rem; margin-top:.7rem; border-top:1px dashed var(--line); padding-top:.6rem; }
   .note .p4 { color:var(--warn); }
+  .ab-box { margin-top:.8rem; border-top:1px dashed var(--line); padding-top:.6rem; }
+  .btn.ab-side { min-width:10rem; }
+  .btn.ab-side.on { border-color:var(--amber); background:#2c2520; color:var(--amber); box-shadow:0 0 10px rgba(255,174,58,.18); }
   .warn { color:var(--warn); }
   .player { margin-top:1.2rem; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:.8rem; }
   .player .nowsrc { color:var(--amber); font-size:.9rem; margin-bottom:.5rem; }
@@ -100,6 +103,20 @@
       <span class="kv">kHz</span><button class="btn primary" onclick="tuneAM()">Tune AM</button></div>
     <div class="state" id="am-state"></div>
     <div class="note">A/B/C are dx-R2 ports (preempt FM); HF+ is the YouLoop (its own device). Best per station: 960→B, 1230/1550→HF+.</div>
+    <div class="ab-box">
+      <div class="presets-label">⚖ Live A/B — same station on two antennas, instant switch</div>
+      <div class="row" id="ab-idle">
+        <input type="number" id="ab-freq" step="10" placeholder="960"><span class="kv">kHz</span>
+        <button class="btn" id="ab-start" onclick="abStart()">Compare A/B (stops FM)</button>
+      </div>
+      <div class="row" id="ab-live" style="display:none">
+        <span class="kv">A/B <b id="ab-fq"></b> kHz</span>
+        <button class="btn ab-side" id="ab-a" onclick="abPlay('a')">◀ A · HF+ YouLoop</button>
+        <button class="btn ab-side" id="ab-b" onclick="abPlay('b')">B · dx-R2 loop+balun ▶</button>
+        <button class="btn" onclick="abStop()">✕ Stop (restore FM)</button>
+      </div>
+      <audio id="aba" preload="none"></audio><audio id="abb" preload="none"></audio>
+    </div>
   </div>
 
   <div class="panel" id="p-noaa">
@@ -184,6 +201,32 @@ async function atcTune(){
        const j=await r.json(); if(!j.ok) throw new Error(j.msg||j.error||'failed'); play('atc','/scanner-atc.mp3'); }
   catch(e){ alert('ATC tune failed: '+e.message); }
 }
+// Live A/B comparison — both mounts play at once (one muted) so A<->B is instant.
+async function abStart(){
+  const f=(document.getElementById('ab-freq').value.trim()||document.getElementById('am-freq').value.trim());
+  if(!f){ alert('Enter an AM frequency (kHz) to compare.'); return; }
+  const b=document.getElementById('ab-start'); b.textContent='starting…'; b.disabled=true;
+  try{ const r=await fetch('/api/abcompare/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({freq:f})});
+       const j=await r.json(); if(!j.ok) throw new Error(j.error||'failed'); setTimeout(abEngage,9000); }
+  catch(e){ alert('A/B start failed: '+e.message); b.textContent='Compare A/B (stops FM)'; b.disabled=false; }
+}
+function abEngage(){
+  const aa=document.getElementById('aba'), ab=document.getElementById('abb');
+  aa.src=ICECAST+'/am-a.mp3?_='+Date.now(); ab.src=ICECAST+'/am-b.mp3?_='+Date.now();
+  aa.volume=1; ab.volume=0; aa.play().catch(()=>{}); ab.play().catch(()=>{});
+  audio.pause(); abPlay('a');
+}
+function abPlay(side){
+  document.getElementById('aba').volume=(side==='a')?1:0;
+  document.getElementById('abb').volume=(side==='b')?1:0;
+  document.getElementById('ab-a').classList.toggle('on',side==='a');
+  document.getElementById('ab-b').classList.toggle('on',side==='b');
+  document.getElementById('nowsrc').textContent='⚖ A/B — '+(side==='a'?'A · HF+ YouLoop':'B · dx-R2 loop+balun');
+}
+async function abStop(){
+  try{ await fetch('/api/abcompare/stop',{method:'POST'}); }catch(e){}
+  ['aba','abb'].forEach(i=>{const e=document.getElementById(i); e.pause(); e.removeAttribute('src'); try{e.load();}catch(_){} });
+}
 
 async function tuneFM(){
   const f=document.getElementById('fm-freq').value.trim(); if(!f) return;
@@ -240,6 +283,13 @@ async function refresh(){
        if(pa){ pa.disabled=false; pa.classList.toggle('on',m==='p25'); pa.textContent=(m==='p25')?'P25 active ✓':'⚡ Activate P25 (preempt R2)'; }
        const aa=document.getElementById('atc-activate');
        if(aa){ aa.disabled=false; aa.classList.toggle('on',m==='atc'); aa.textContent=(m==='atc')?'ATC active ✓':'⚡ Tune ATC (preempt R2)'; }
+  }catch(e){}
+  // A/B comparison state -> swap idle/live rows
+  try{ const ab=await(await fetch('/api/abcompare/state')).json();
+       document.getElementById('ab-idle').style.display=ab.active?'none':'';
+       document.getElementById('ab-live').style.display=ab.active?'':'none';
+       if(ab.active){ document.getElementById('ab-fq').textContent=ab.freq||''; }
+       else{ const b=document.getElementById('ab-start'); if(b){ b.textContent='Compare A/B (stops FM)'; b.disabled=false; } }
   }catch(e){}
 }
 // Debug window — live stack activity (commands + transitions) via /api/debug-log.
