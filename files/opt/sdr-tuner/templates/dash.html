@@ -5,106 +5,136 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ site_title }} — Stack</title>
 <style>
-  :root { --amber:#ffae3a; --amber-dim:#9a6a1f; --bg:#0c0a08; --panel:#16120d;
-          --line:#2a2117; --text:#e8e0d4; --faint:#8a7e6c; --live:#4ad07a; --warn:#e0613a; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text);
-         font-family:'Courier New',ui-monospace,monospace; letter-spacing:.02em; }
-  header { padding:.8rem 1rem; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:1rem; }
-  header h1 { font-size:1rem; margin:0; color:var(--amber); text-shadow:0 0 8px var(--amber); }
-  header .nav a { color:var(--faint); text-decoration:none; margin-left:1rem; font-size:.8rem; }
-  header .nav a:hover { color:var(--amber); }
-  .wrap { max-width:880px; margin:0 auto; padding:1rem; }
-  .strip { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:1rem; }
-  .badge { display:flex; align-items:center; gap:.4rem; background:var(--panel);
-           border:1px solid var(--line); border-radius:6px; padding:.35rem .6rem; font-size:.78rem; }
-  .dot { width:9px; height:9px; border-radius:50%; background:#444; flex:none; }
-  .dot.live { background:var(--live); box-shadow:0 0 6px var(--live); }
-  .badge .lbl { color:var(--faint); text-transform:uppercase; letter-spacing:.06em; }
-  .badge .lc { color:var(--amber-dim); font-size:.72rem; }
-  /* tabs */
-  .tabs { display:flex; gap:.3rem; border-bottom:1px solid var(--line); margin-bottom:1rem; flex-wrap:wrap; }
-  .tab { background:none; border:none; color:var(--faint); font-family:inherit; font-size:.95rem;
-         padding:.6rem 1rem; cursor:pointer; border-bottom:2px solid transparent; letter-spacing:.05em; }
-  .tab:hover { color:var(--text); }
-  .tab.on { color:var(--amber); border-bottom-color:var(--amber); text-shadow:0 0 8px var(--amber); }
-  .tab .tdot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#444; margin-left:.4rem; vertical-align:middle; }
-  .tab .tdot.live { background:var(--live); box-shadow:0 0 5px var(--live); }
-  .panel { display:none; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:1rem; }
-  .panel.on { display:block; }
-  .panel h2 { margin:0 0 .2rem; color:var(--amber); font-size:1.1rem; }
-  .panel .sub { color:var(--faint); font-size:.8rem; margin-bottom:.9rem; }
-  .row { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin:.5rem 0; }
-  .btn { background:#211a11; border:1px solid var(--line); color:var(--text); font-family:inherit;
-         font-size:.85rem; padding:.45rem .8rem; border-radius:6px; cursor:pointer; }
-  .btn:hover:not(:disabled) { border-color:var(--amber-dim); }
-  .btn.on { border-color:var(--amber); background:#2c2520; color:var(--amber); }
-  .btn.primary { background:var(--amber); color:#1a1208; border-color:var(--amber); font-weight:600; }
-  .btn:disabled { opacity:.4; cursor:not-allowed; }
-  input[type=text],input[type=number] { background:#0f0c08; border:1px solid var(--line); color:var(--text);
-         font-family:inherit; font-size:.9rem; padding:.45rem .6rem; border-radius:6px; width:7rem; }
-  .chips { display:flex; flex-wrap:wrap; gap:.4rem; }
-  .chip { background:#1c160e; border:1px solid var(--line); color:var(--text); font-family:inherit;
-          font-size:.8rem; padding:.35rem .6rem; border-radius:14px; cursor:pointer; }
-  .chip:hover { border-color:var(--amber-dim); }
-  .state { font-size:.82rem; margin:.5rem 0; display:flex; align-items:center; gap:.45rem; }
-  .note { color:var(--faint); font-size:.76rem; margin-top:.7rem; border-top:1px dashed var(--line); padding-top:.6rem; }
-  .note .p4 { color:var(--warn); }
-  .ab-box { margin-top:.8rem; border-top:1px dashed var(--line); padding-top:.6rem; }
-  .btn.ab-side { min-width:10rem; }
-  .btn.ab-side.on { border-color:var(--amber); background:#2c2520; color:var(--amber); box-shadow:0 0 10px rgba(255,174,58,.18); }
-  .warn { color:var(--warn); }
-  .player { margin-top:1.2rem; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:.8rem; }
-  .player .nowsrc { color:var(--amber); font-size:.9rem; margin-bottom:.5rem; }
-  audio { width:100%; }
-  .foot { color:var(--faint); font-size:.72rem; margin-top:1rem; }
-  .foot code,.note code { color:var(--amber-dim); }
-  a { color:var(--amber-dim); }
-  .kv { color:var(--faint); } .kv b { color:var(--text); font-weight:600; }
-  /* debug window */
-  #dbg-toggle{position:fixed;bottom:14px;right:14px;z-index:50;background:var(--panel);border:1px solid var(--amber-dim);color:var(--amber);border-radius:50%;width:42px;height:42px;font-size:1.15rem;cursor:pointer;}
+  :root{
+    --bg:#08070a; --panel:rgba(28,24,33,.72); --panel-solid:#14121a;
+    --line:#2c2733; --line2:#3a3343; --text:#ece8f0; --faint:#8c8597; --dim:#5f5a6b;
+    --amber:#ffb648; --live:#52e08a; --warn:#ff6a4a;
+    --fm:#6fb3ff; --am:#ffb648; --noaa:#52e08a; --p25:#ff6a4a; --atc:#49d4dd;
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:radial-gradient(1100px 560px at 72% -12%, #1b1626 0%, var(--bg) 55%) fixed, var(--bg);
+    color:var(--text); font-family:ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased; min-height:100vh; padding-bottom:104px;
+  }
+  header{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:1rem;
+    padding:.7rem 1.1rem;background:rgba(8,7,10,.82);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);}
+  header .logo{font-size:1rem;font-weight:700;letter-spacing:.07em;display:flex;align-items:center;gap:.45rem;}
+  header .logo .glow{color:var(--amber);text-shadow:0 0 14px var(--amber);}
+  header .nav{margin-left:auto;display:flex;gap:.15rem;}
+  header .nav a{color:var(--faint);text-decoration:none;font-size:.82rem;padding:.35rem .7rem;border-radius:8px;}
+  header .nav a:hover{color:var(--text);background:rgba(255,255,255,.06);}
+  .wrap{max-width:760px;margin:0 auto;padding:1.1rem;}
+  .strip{display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:1.1rem;}
+  .badge{display:flex;align-items:center;gap:.4rem;background:var(--panel);border:1px solid var(--line);
+    border-radius:999px;padding:.32rem .72rem .32rem .58rem;font-size:.76rem;backdrop-filter:blur(6px);}
+  .badge .ic{font-size:.85rem;} .badge .lbl{font-weight:700;letter-spacing:.03em;color:var(--c,var(--faint));}
+  .badge .lc{color:var(--faint);font-variant-numeric:tabular-nums;}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none;transition:.3s;}
+  .dot.live{background:var(--live);box-shadow:0 0 8px var(--live);}
+  .tabs{display:flex;gap:.3rem;padding:.3rem;background:var(--panel);border:1px solid var(--line);
+    border-radius:13px;margin-bottom:1.1rem;overflow-x:auto;}
+  .tab{flex:1;display:flex;align-items:center;justify-content:center;gap:.4rem;background:none;border:none;
+    color:var(--faint);font:inherit;font-size:.9rem;font-weight:600;padding:.55rem .7rem;cursor:pointer;
+    border-radius:9px;transition:.18s;white-space:nowrap;}
+  .tab:hover{color:var(--text);background:rgba(255,255,255,.04);}
+  .tab.on{color:#0c0a10;background:var(--c,var(--amber));box-shadow:0 5px 18px -6px var(--c,var(--amber));}
+  .tab .tdot{width:7px;height:7px;border-radius:50%;background:var(--dim);}
+  .tab .tdot.live{background:var(--live);box-shadow:0 0 6px var(--live);}
+  .tab.on .tdot{background:#0c0a10;opacity:.45;} .tab.on .tdot.live{opacity:.95;box-shadow:none;}
+  .panel{display:none;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:1.15rem 1.15rem 1.25rem;position:relative;overflow:hidden;backdrop-filter:blur(8px);box-shadow:0 14px 44px -20px #000;}
+  .panel.on{display:block;animation:fade .22s ease;}
+  @keyframes fade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+  .panel::before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:var(--c,var(--amber));}
+  .src-fm{--c:var(--fm)} .src-am{--c:var(--am)} .src-noaa{--c:var(--noaa)} .src-p25{--c:var(--p25)} .src-atc{--c:var(--atc)}
+  .phead{display:flex;align-items:center;gap:.55rem;margin-bottom:.15rem;}
+  .phead h2{margin:0;font-size:1.18rem;} .phead .ic{font-size:1.15rem;}
+  .sub{color:var(--faint);font-size:.78rem;margin-bottom:1rem;}
+  .row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.55rem 0;}
+  .kv{color:var(--faint);font-size:.82rem;} .kv b{color:var(--text);}
+  .btn{background:rgba(255,255,255,.05);border:1px solid var(--line2);color:var(--text);font:inherit;
+    font-size:.85rem;font-weight:500;padding:.5rem .85rem;border-radius:9px;cursor:pointer;transition:.15s;}
+  .btn:hover:not(:disabled){background:rgba(255,255,255,.09);border-color:var(--faint);}
+  .btn:disabled{opacity:.4;cursor:not-allowed;}
+  .btn.primary{background:var(--c,var(--amber));color:#0c0a10;border-color:transparent;font-weight:700;}
+  .btn.primary:hover:not(:disabled){filter:brightness(1.08);}
+  .btn.on{background:var(--c,var(--amber));color:#0c0a10;border-color:transparent;font-weight:700;box-shadow:0 4px 16px -6px var(--c,var(--amber));}
+  input[type=number],input[type=text]{background:#0b0910;border:1px solid var(--line2);color:var(--text);font:inherit;
+    font-size:1rem;padding:.5rem .7rem;border-radius:9px;width:6.5rem;font-family:ui-monospace,'Courier New',monospace;letter-spacing:.04em;}
+  input:focus{outline:none;border-color:var(--c,var(--amber));box-shadow:0 0 0 3px rgba(255,182,72,.16);}
+  .seg{display:inline-flex;background:#0b0910;border:1px solid var(--line2);border-radius:10px;padding:3px;gap:2px;}
+  .seg .btn{background:none;border:none;border-radius:7px;padding:.42rem .75rem;font-weight:600;}
+  .chips{display:flex;flex-wrap:wrap;gap:.4rem;}
+  .chip{background:rgba(255,255,255,.05);border:1px solid var(--line2);color:var(--text);font:inherit;font-size:.8rem;
+    padding:.4rem .72rem;border-radius:999px;cursor:pointer;transition:.15s;}
+  .chip:hover{background:rgba(255,255,255,.1);border-color:var(--c,var(--amber));}
+  .state{font-size:.82rem;margin:.65rem 0 .15rem;display:flex;align-items:center;gap:.45rem;color:var(--faint);}
+  .note{color:var(--faint);font-size:.75rem;margin-top:.95rem;border-top:1px solid var(--line);padding-top:.7rem;line-height:1.55;}
+  .note b{color:var(--text);} .note code,.foot code{font-family:ui-monospace,monospace;color:var(--amber);font-size:.92em;}
+  a{color:var(--amber);}
+  .ab-box{margin-top:1rem;border:1px solid var(--line);border-radius:11px;padding:.85rem .9rem;background:rgba(0,0,0,.22);}
+  .ab-title{font-size:.82rem;font-weight:700;margin-bottom:.55rem;display:flex;align-items:center;gap:.4rem;}
+  .btn.ab-side{min-width:11rem;font-family:ui-monospace,monospace;}
+  .btn.ab-side.on{background:var(--am);color:#0c0a10;border-color:transparent;box-shadow:0 4px 18px -6px var(--am);}
+  .player{position:fixed;left:0;right:0;bottom:0;z-index:28;background:rgba(10,8,14,.93);backdrop-filter:blur(14px);
+    border-top:1px solid var(--line);padding:.6rem 1.1rem .75rem;}
+  .player .inner{max-width:760px;margin:0 auto;}
+  .player .nowsrc{color:var(--amber);font-size:.85rem;font-weight:700;margin-bottom:.35rem;}
+  .player audio{width:100%;height:36px;}
+  .foot{color:var(--dim);font-size:.7rem;margin:1.2rem 0 .4rem;line-height:1.5;}
+  .warn{color:var(--warn);}
+  #dbg-toggle{position:fixed;bottom:92px;right:16px;z-index:40;background:var(--panel-solid);border:1px solid var(--line2);
+    color:var(--amber);border-radius:50%;width:44px;height:44px;font-size:1.2rem;cursor:pointer;box-shadow:0 6px 20px -6px #000;}
   #dbg-toggle:hover{border-color:var(--amber);}
-  #dbg-panel{position:fixed;left:0;right:0;bottom:0;height:40vh;background:#0a0806;border-top:2px solid var(--amber-dim);z-index:49;display:none;flex-direction:column;}
+  #dbg-panel{position:fixed;left:0;right:0;bottom:0;height:42vh;background:rgba(6,5,9,.97);backdrop-filter:blur(12px);
+    border-top:2px solid var(--amber);z-index:45;display:none;flex-direction:column;}
   #dbg-panel.on{display:flex;}
-  .dbg-head{padding:.5rem .8rem;border-bottom:1px solid var(--line);color:var(--amber);font-size:.85rem;display:flex;gap:.6rem;align-items:center;}
-  .dbg-head .kv{margin-right:auto;}
-  #dbg-log{flex:1;overflow-y:auto;padding:.5rem .8rem;font-size:.74rem;line-height:1.55;}
+  .dbg-head{padding:.6rem 1rem;border-bottom:1px solid var(--line);color:var(--amber);font-size:.85rem;font-weight:700;display:flex;gap:.6rem;align-items:center;}
+  .dbg-head .kv{margin-right:auto;font-weight:400;}
+  #dbg-log{flex:1;overflow-y:auto;padding:.5rem 1rem;font-size:.74rem;line-height:1.6;font-family:ui-monospace,monospace;}
   .dbg-row{white-space:nowrap;}
-  .dbg-row .t{color:var(--faint);} .dbg-row .a{color:var(--text);} .dbg-row .d{color:var(--faint);} .dbg-row .c{font-weight:600;}
-  .dbg-row.radio .c{color:#6fb3ff;} .dbg-row.stack .c{color:var(--live);} .dbg-row.rack .c{color:var(--amber);}
+  .dbg-row .t{color:var(--dim);} .dbg-row .a{color:var(--text);} .dbg-row .d{color:var(--faint);} .dbg-row .c{font-weight:700;}
+  .dbg-row.radio .c{color:var(--fm);} .dbg-row.stack .c{color:var(--live);} .dbg-row.rack .c{color:var(--amber);}
   .dbg-row .s-ok{color:var(--live);} .dbg-row .s-err{color:var(--warn);}
+  @media (max-width:560px){ .wrap{padding:.8rem;} .full{display:none;} .btn.ab-side{min-width:0;flex:1;} }
 </style>
 </head>
 <body>
 <header>
-  <h1>◆ {{ site_title }} — STACK</h1>
+  <div class="logo"><span class="glow">◆</span><span class="full">&nbsp;{{ site_title }} ·</span>&nbsp;STACK</div>
   <div class="nav"><a href="/radio">FM tuner</a><a href="https://wx.rg2.io">weather</a><a href="https://ems.rg2.io">scanner</a></div>
 </header>
 <div class="wrap">
   <div class="strip" id="strip"></div>
   <div class="tabs" id="tabs"></div>
 
-  <div class="panel" id="p-fm">
-    <h2>FM</h2><div class="sub">dx-R2 · Antenna A (Shakespeare) · /fm.mp3</div>
+  <div class="panel src-fm" id="p-fm">
+    <div class="phead"><span class="ic">📻</span><h2>FM</h2></div>
+    <div class="sub">dx-R2 · Antenna A (Shakespeare) · /fm.mp3</div>
     <div class="row"><div class="chips" id="fm-presets"></div></div>
     <div class="row"><input type="number" id="fm-freq" step="0.1" placeholder="100.7">
       <span class="kv">MHz</span><button class="btn primary" onclick="tuneFM()">Tune FM</button></div>
     <div class="state" id="fm-state"></div>
   </div>
 
-  <div class="panel" id="p-am">
-    <h2>AM</h2><div class="sub">antenna-selectable · /fm.mp3 (shares the FM mount — tuning AM takes FM off air)</div>
-    <div class="row"><span class="kv">Antenna:</span>
-      <button class="btn am-ant" data-ant="Antenna A">A</button>
-      <button class="btn am-ant" data-ant="Antenna B">B</button>
-      <button class="btn am-ant" data-ant="Antenna C">C</button>
-      <button class="btn am-ant" data-ant="HF+">HF+</button></div>
+  <div class="panel src-am" id="p-am">
+    <div class="phead"><span class="ic">📡</span><h2>AM</h2></div>
+    <div class="sub">antenna-selectable · /fm.mp3 (shares the FM mount — tuning AM takes FM off air)</div>
+    <div class="row"><span class="kv">Antenna</span>
+      <div class="seg">
+        <button class="btn am-ant" data-ant="Antenna A">A</button>
+        <button class="btn am-ant" data-ant="Antenna B">B</button>
+        <button class="btn am-ant" data-ant="Antenna C">C</button>
+        <button class="btn am-ant" data-ant="HF+">HF+</button></div></div>
     <div class="row"><input type="number" id="am-freq" step="10" placeholder="960">
       <span class="kv">kHz</span><button class="btn primary" onclick="tuneAM()">Tune AM</button></div>
     <div class="state" id="am-state"></div>
     <div class="note">A/B/C are dx-R2 ports (preempt FM); HF+ is the YouLoop (its own device). Best per station: 960→B, 1230/1550→HF+.</div>
     <div class="ab-box">
-      <div class="presets-label">⚖ Live A/B — same station on two antennas, instant switch</div>
+      <div class="ab-title">⚖ Live A/B — same station on two antennas, instant switch</div>
       <div class="row" id="ab-idle">
         <input type="number" id="ab-freq" step="10" placeholder="960"><span class="kv">kHz</span>
         <button class="btn" id="ab-start" onclick="abStart()">Compare A/B (stops FM)</button>
@@ -119,8 +149,9 @@
     </div>
   </div>
 
-  <div class="panel" id="p-noaa">
-    <h2>NOAA Weather Radio</h2><div class="sub">162.550 · discone (R2) · /wx.mp3 · SAME/EAS alerts → wx.rg2.io</div>
+  <div class="panel src-noaa" id="p-noaa">
+    <div class="phead"><span class="ic">🌩️</span><h2>NOAA Weather Radio</h2></div>
+    <div class="sub">162.550 · discone (R2) · /wx.mp3 · SAME/EAS alerts → wx.rg2.io</div>
     <div class="state" id="noaa-state"></div>
     <div class="row"><button class="btn primary" onclick="play('noaa','/wx.mp3')">▶ Listen</button>
       <button class="btn" id="noaa-activate" onclick="r2mode('noaa')">Set R2 → NOAA</button>
@@ -128,17 +159,19 @@
     <div class="note">The R2's <b>24/7 default</b> (always-listening for alerts). The R2-mode coordinator returns here when you stop P25.</div>
   </div>
 
-  <div class="panel" id="p-p25">
-    <h2>P25 — MOSWIN</h2><div class="sub">discone (R2) · /ems.mp3 · trunk-following scanner</div>
+  <div class="panel src-p25" id="p-p25">
+    <div class="phead"><span class="ic">🚓</span><h2>P25 — MOSWIN</h2></div>
+    <div class="sub">discone (R2) · /ems.mp3 · trunk-following scanner</div>
     <div class="state" id="p25-state"></div>
     <div class="row"><button class="btn" id="p25-activate" onclick="r2mode('p25')">⚡ Activate P25 (preempt R2)</button>
       <button class="btn primary" onclick="play('p25','/ems.mp3')">▶ Listen</button>
       <a class="btn" href="https://ems.rg2.io" target="_blank">scanner UI ↗</a></div>
-    <div class="note"><b>Preempts NOAA</b> on the R2 (single-tuner). Activating bounces the source fresh + cold-starts op25 — the control channel takes <b>~60–90 s</b> to lock (tsbks climb). Stop = switch back to NOAA. Live status proxies through the <code>/api/scanner</code> gateway.</div>
+    <div class="note"><b>Preempts NOAA</b> on the R2 (single-tuner). Activating bounces the source fresh + cold-starts op25 — the control channel takes <b>~60–90 s</b> to lock. Stop = switch back to NOAA. Live status via the <code>/api/scanner</code> gateway.</div>
   </div>
 
-  <div class="panel" id="p-atc">
-    <h2>ATC / Monitor airband</h2><div class="sub">discone (R2) · AM · /scanner-atc.mp3</div>
+  <div class="panel src-atc" id="p-atc">
+    <div class="phead"><span class="ic">✈️</span><h2>ATC / Monitor airband</h2></div>
+    <div class="sub">discone (R2) · AM · /scanner-atc.mp3</div>
     <div class="row"><div class="chips">
       <span class="chip" onclick="atcPreset('120.55')">AWOS 120.55</span>
       <span class="chip" onclick="atcPreset('119.0')">Tower 119.0</span>
@@ -149,15 +182,17 @@
     <div class="state" id="atc-state"></div>
     <div class="row"><button class="btn primary" onclick="play('atc','/scanner-atc.mp3')">▶ Listen</button>
       <a class="btn" href="https://ems.rg2.io" target="_blank">scanner UI ↗</a></div>
-    <div class="note">On-demand AM airband — <b>preempts P25/NOAA</b> via the R2-mode coordinator (stops the current holder, bounces the source, tunes). Stop = back to NOAA. Presets above fill the box.</div>
+    <div class="note">On-demand AM airband — <b>preempts P25/NOAA</b> via the R2-mode coordinator. Stop = back to NOAA. Tap a preset to tune instantly.</div>
   </div>
 
-  <div class="player">
-    <div class="nowsrc" id="nowsrc">— select a source —</div>
-    <audio id="audio" controls preload="none"></audio>
-  </div>
-  <div class="foot">Phase-1 · FM/AM tune live (radio API); NOAA/P25/ATC show live state via <code>/api/stack-state</code> + the <code>/api/scanner</code> gateway; R2 source switching is Phase 4. See <code>docs/UNIFIED_GUI_DESIGN.md</code>.</div>
+  <div class="foot">FM/AM tune live · NOAA/P25/ATC switch the single-tuner discone via the R2-mode coordinator · 🛠 (bottom-right) opens the live stack-activity log. See <code>docs/UNIFIED_GUI_DESIGN.md</code>.</div>
 </div>
+
+<div class="player"><div class="inner">
+  <div class="nowsrc" id="nowsrc">— select a source —</div>
+  <audio id="audio" controls preload="none"></audio>
+</div></div>
+
 <button id="dbg-toggle" onclick="toggleDbg()" title="Debug — live stack activity">🛠</button>
 <div id="dbg-panel">
   <div class="dbg-head"><span>🛠 Stack activity</span><span class="kv">commands rack ↔ attic + transitions — the radio hub's view</span>
@@ -167,15 +202,15 @@
 </div>
 <script>
 const ICECAST="https://icecast.rg2.io";
-const TABS=[["fm","FM"],["am","AM"],["noaa","NOAA"],["p25","P25"],["atc","ATC"]];
+const SRC={fm:{l:'FM',i:'📻',c:'var(--fm)'},am:{l:'AM',i:'📡',c:'var(--am)'},
+           noaa:{l:'NOAA',i:'🌩️',c:'var(--noaa)'},p25:{l:'P25',i:'🚓',c:'var(--p25)'},atc:{l:'ATC',i:'✈️',c:'var(--atc)'}};
+const TABORDER=['fm','am','noaa','p25','atc'];
 const audio=document.getElementById('audio');
-let cur={};               // latest stack-state by source id
-let amAnt="Antenna A";
-let playingId=null;
+let cur={}, amAnt="Antenna A", playingId=null;
 
 // tab bar
-document.getElementById('tabs').innerHTML=TABS.map(([id,lbl],i)=>
-  `<button class="tab ${i===0?'on':''}" data-tab="${id}">${lbl}<span class="tdot" id="td-${id}"></span></button>`).join('');
+document.getElementById('tabs').innerHTML=TABORDER.map((id,i)=>{const s=SRC[id];
+  return `<button class="tab ${i===0?'on':''}" data-tab="${id}" style="--c:${s.c}"><span>${s.i}</span>${s.l}<span class="tdot" id="td-${id}"></span></button>`;}).join('');
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id==='p-'+t.dataset.tab));
@@ -183,10 +218,9 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
 document.getElementById('p-fm').classList.add('on');
 
 function play(id,mount){ playingId=id;
-  document.getElementById('nowsrc').textContent=`▶ ${id.toUpperCase()}  (${mount})`;
+  document.getElementById('nowsrc').textContent=`▶ ${(SRC[id]||{l:id.toUpperCase()}).l}  ·  ${mount}`;
   audio.src=ICECAST+mount+'?_='+Date.now(); audio.play().catch(()=>{}); }
 
-// R2-mode coordinator: NOAA <-> P25 (single-tuner discone; preempt on demand).
 async function r2mode(m){
   const el=document.getElementById(m+'-activate'); if(el){ el.textContent='switching…'; el.disabled=true; }
   try{ const r=await fetch('/api/scanner/r2/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
@@ -201,7 +235,7 @@ async function atcTune(){
        const j=await r.json(); if(!j.ok) throw new Error(j.msg||j.error||'failed'); play('atc','/scanner-atc.mp3'); }
   catch(e){ alert('ATC tune failed: '+e.message); }
 }
-// Live A/B comparison — both mounts play at once (one muted) so A<->B is instant.
+// Live A/B — both mounts play at once (one muted) so A<->B is instant.
 async function abStart(){
   const f=(document.getElementById('ab-freq').value.trim()||document.getElementById('am-freq').value.trim());
   if(!f){ alert('Enter an AM frequency (kHz) to compare.'); return; }
@@ -252,31 +286,26 @@ function stateLine(s){
   const live=s.live?`<span class="dot live"></span> <b>LIVE</b> · ${s.listeners} listening`
                     :`<span class="dot"></span> idle`;
   let extra='';
-  if(s.id==='fm'||s.id==='am') extra=s.freq?` · ${s.freq}${s.band==='am'?'kHz':'MHz'} · ${(s.antenna||'').replace('Antenna ','')||'A'} · dev ${s.device}`:'';
+  if(s.id==='fm'||s.id==='am') extra=s.freq?` · ${s.freq}${s.band==='am'?' kHz':' MHz'} · ${(s.antenna||'').replace('Antenna ','')||'A'} · ${s.device}`:'';
   return `<span class="kv">${live}${extra}</span>`;
 }
 
 async function refresh(){
   let d; try{ d=await(await fetch('/api/stack-state')).json(); }catch(e){ return; }
   cur={}; (d.streams||[]).forEach(s=>cur[s.id]=s);
-  // dx-R2 mount carries fm OR am; reflect into both tabs
   const dx=cur.fm||cur.am;
-  document.getElementById('strip').innerHTML=(d.streams||[]).map(s=>
-    `<div class="badge"><span class="dot ${s.live?'live':''}"></span><span class="lbl">${s.id}</span>
-      ${s.live?`<span class="lc">●${s.listeners}</span>`:'<span class="lc">idle</span>'}</div>`).join('')
-    +(d.icecast_ok?'':'<span class="warn">· icecast down</span>');
-  // per-tab dots + state
+  document.getElementById('strip').innerHTML=(d.streams||[]).map(s=>{const sd=SRC[s.id]||{l:s.id,i:'•',c:'var(--faint)'};
+    return `<div class="badge" style="--c:${sd.c}"><span class="dot ${s.live?'live':''}"></span><span class="ic">${sd.i}</span><span class="lbl">${sd.l}</span>${s.live?`<span class="lc">${s.listeners}♪</span>`:'<span class="lc">idle</span>'}</div>`;}).join('')
+    +(d.icecast_ok?'':'<span class="warn"> · icecast down</span>');
   ['fm','am','noaa','p25','atc'].forEach(id=>{
     const s = (id==='fm'||id==='am') ? dx : cur[id];
     const on = s && s.live && (id==='fm'||id==='am' ? s.band===id : true);
     const td=document.getElementById('td-'+id); if(td) td.classList.toggle('live',!!on);
     const st=document.getElementById(id+'-state'); if(st) st.innerHTML=stateLine(s&&{...s,id});
   });
-  // P25 live talkgroup via the gateway
   try{ const ss=await(await fetch('/api/scanner/status')).json();
        const tg=(ss.current&&ss.current.detail)||ss.active||''; if(tg){
          document.getElementById('p25-state').innerHTML+=` <span class="kv">· <b>${tg}</b></span>`; } }catch(e){}
-  // R2-mode coordinator state -> reflect on the activate buttons
   try{ const r2=await(await fetch('/api/scanner/r2/state')).json(); const m=r2.mode;
        const na=document.getElementById('noaa-activate'), pa=document.getElementById('p25-activate');
        if(na){ na.disabled=false; na.classList.toggle('on',m==='noaa'); na.textContent=(m==='noaa')?'R2: NOAA ✓':'Set R2 → NOAA'; }
@@ -284,7 +313,6 @@ async function refresh(){
        const aa=document.getElementById('atc-activate');
        if(aa){ aa.disabled=false; aa.classList.toggle('on',m==='atc'); aa.textContent=(m==='atc')?'ATC active ✓':'⚡ Tune ATC (preempt R2)'; }
   }catch(e){}
-  // A/B comparison state -> swap idle/live rows
   try{ const ab=await(await fetch('/api/abcompare/state')).json();
        document.getElementById('ab-idle').style.display=ab.active?'none':'';
        document.getElementById('ab-live').style.display=ab.active?'':'none';
@@ -292,7 +320,7 @@ async function refresh(){
        else{ const b=document.getElementById('ab-start'); if(b){ b.textContent='Compare A/B (stops FM)'; b.disabled=false; } }
   }catch(e){}
 }
-// Debug window — live stack activity (commands + transitions) via /api/debug-log.
+// Debug window
 let dbgOn=false, dbgSeq=0, dbgTimer=null;
 function toggleDbg(){ dbgOn=!dbgOn; document.getElementById('dbg-panel').classList.toggle('on',dbgOn);
   if(dbgOn){ pollDbg(); dbgTimer=setInterval(pollDbg,2000); } else { clearInterval(dbgTimer); dbgTimer=null; } }
