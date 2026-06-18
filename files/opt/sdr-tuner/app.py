@@ -500,6 +500,17 @@ def _active_source() -> str:
     return ""
 
 
+def _r2_mode():
+    """Authoritative R2 mode (noaa|p25|atc) from the single-tuner coordinator on .83.
+    The icecast mounts can't tell us: /ems.mp3 + /scanner-atc.mp3 stay published via
+    liquidsoap mksafe even when idle, so they'd read 'live' on the wrong mode.
+    Returns None if the coordinator is unreachable (caller falls back to mounts)."""
+    try:
+        return requests.get(f"{SCANNER_API_URL}/api/r2/state", timeout=3).json().get("mode")
+    except Exception:  # noqa: BLE001 — scanner-api down is a normal runtime state
+        return None
+
+
 def _icecast_mounts() -> dict:
     """Live mounts from the rack Icecast status-json: mount -> {listeners, title}."""
     out = {}
@@ -530,9 +541,11 @@ def api_stack_state():
     # so it's the R2's FALLBACK; /wx.mp3 + /scanner-atc.mp3 are only live when their
     # service actually holds the single-tuner R2. (True P25-decode state — vs an
     # idle silent mount — needs the scanner-api; that's the Phase-1 gateway.)
-    r2_role = ("noaa" if "/wx.mp3" in live else
-               "atc" if "/scanner-atc.mp3" in live else
-               "p25" if "/ems.mp3" in live else "idle")
+    # The coordinator is authoritative (the single-tuner R2 is in exactly one mode);
+    # the mksafe-padded mounts only serve as a fallback when .83 is unreachable.
+    r2_role = _r2_mode() or ("noaa" if "/wx.mp3" in live else
+                             "atc" if "/scanner-atc.mp3" in live else
+                             "p25" if "/ems.mp3" in live else "idle")
     streams = []
     for mount, sid, sband, dev in _STREAM_MAP:
         m = live.get(mount)
@@ -715,6 +728,125 @@ def api_atc_presets():
         return jsonify({"ok": False, "error": str(e)}), 500
     debug_event("radio", "ATC presets saved", f"{len(clean)} presets")
     return jsonify({"ok": True, "presets": clean})
+
+
+# ---------------------------------------------------------------------------
+# ATC recording + scheduling. These endpoints only manage the schedule/config
+# and serve recordings for playback; the actual tune+record+prune is done by the
+# atc-rec-tick (a 1-min systemd timer) reconciling the schedule against the clock.
+# One recording at a time (the R2 is single-tuner). Times are epoch seconds.
+# ---------------------------------------------------------------------------
+ATC_REC_DIR       = Path("/var/lib/sdr-streams/atc-rec")
+ATC_SCHEDULE_PATH = ATC_REC_DIR / "schedule.json"
+ATC_REC_CFG_PATH  = ATC_REC_DIR / "config.json"
+ATC_REC_DEFAULT_RETENTION = 14
+
+
+def _atc_rec_load():
+    try:
+        return json.loads(ATC_SCHEDULE_PATH.read_text()).get("jobs", [])
+    except (OSError, ValueError):
+        return []
+
+
+def _atc_rec_save(jobs):
+    ATC_REC_DIR.mkdir(parents=True, exist_ok=True)
+    ATC_SCHEDULE_PATH.write_text(json.dumps({"jobs": jobs}, indent=2))
+
+
+def _atc_rec_cfg():
+    try:
+        return {"retention_days": int(json.loads(ATC_REC_CFG_PATH.read_text())["retention_days"])}
+    except (OSError, ValueError, KeyError):
+        return {"retention_days": ATC_REC_DEFAULT_RETENTION}
+
+
+def _atc_rec_decorate(jobs):
+    out = []
+    for j in jobs:
+        d = dict(j)
+        f = ATC_REC_DIR / f"{j['id']}.mp3"
+        d["has_file"] = f.exists()
+        d["bytes"] = f.stat().st_size if f.exists() else 0
+        out.append(d)
+    return out
+
+
+@app.route("/api/atc-rec")
+def api_atc_rec():
+    return jsonify({"jobs": _atc_rec_decorate(_atc_rec_load()),
+                    "config": _atc_rec_cfg(), "now": int(time.time())})
+
+
+@app.route("/api/atc-rec/schedule", methods=["POST"])
+def api_atc_rec_schedule():
+    b = request.get_json(silent=True) or {}
+    try:
+        start = int(float(b.get("start") or time.time()))
+        dur = int(float(b.get("duration_min") or 0))
+        end = int(float(b["end"])) if b.get("end") else start + dur * 60
+        freq = str(b.get("freq", "")).strip().rstrip("Mm")
+        float(freq)
+    except (ValueError, KeyError, TypeError):
+        return jsonify({"ok": False, "error": "freq + start + (end or duration_min) required"}), 400
+    if end <= start or end <= time.time():
+        return jsonify({"ok": False, "error": "the window must end in the future"}), 400
+    label = str(b.get("label", "")).strip() or f"ATC {freq}"
+    job = {"id": f"atc-{int(time.time() * 1000)}", "label": label, "freq": freq,
+           "start": start, "end": end, "status": "scheduled", "created": int(time.time())}
+    jobs = _atc_rec_load()
+    jobs.append(job)
+    _atc_rec_save(jobs)
+    debug_event("radio", "ATC rec scheduled", f"{label} {freq}MHz · {(end - start) // 60}min")
+    return jsonify({"ok": True, "job": job})
+
+
+@app.route("/api/atc-rec/cancel", methods=["POST"])
+def api_atc_rec_cancel():
+    jid = str((request.get_json(silent=True) or {}).get("id", ""))
+    jobs = _atc_rec_load()
+    for j in jobs:
+        if j["id"] == jid and j["status"] == "recording":
+            j["end"] = int(time.time())          # the tick stops + finalizes it
+        elif j["id"] == jid and j["status"] == "scheduled":
+            j["status"] = "cancelled"
+    _atc_rec_save(jobs)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/atc-rec/delete", methods=["POST"])
+def api_atc_rec_delete():
+    jid = str((request.get_json(silent=True) or {}).get("id", ""))
+    jobs = _atc_rec_load()
+    job = next((j for j in jobs if j["id"] == jid), None)
+    if job and job.get("status") == "recording":
+        return jsonify({"ok": False, "error": "still recording — cancel it first"}), 409
+    try:
+        (ATC_REC_DIR / f"{jid}.mp3").unlink(missing_ok=True)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    _atc_rec_save([j for j in jobs if j["id"] != jid])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/atc-rec/config", methods=["POST"])
+def api_atc_rec_config():
+    try:
+        days = max(1, min(365, int((request.get_json(silent=True) or {}).get("retention_days"))))
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "retention_days (int) required"}), 400
+    ATC_REC_DIR.mkdir(parents=True, exist_ok=True)
+    ATC_REC_CFG_PATH.write_text(json.dumps({"retention_days": days}))
+    return jsonify({"ok": True, "retention_days": days})
+
+
+@app.route("/api/atc-rec/file/<jid>")
+def api_atc_rec_file(jid):
+    # only serve files tied to a known job id (blocks path traversal + strays)
+    if not any(j["id"] == jid for j in _atc_rec_load()):
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(ATC_REC_DIR, f"{jid}.mp3", mimetype="audio/mpeg",
+                               conditional=True, download_name=f"{jid}.mp3")
 
 
 # ---------------------------------------------------------------------------
