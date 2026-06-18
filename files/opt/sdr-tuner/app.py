@@ -507,9 +507,31 @@ def api_stack_state():
 
 @app.route("/dash")
 def dash():
-    """Unified dashboard shell (Phase 0 prototype) — renders /api/stack-state."""
+    """Unified dashboard shell — source tabs over /api/stack-state + the gateway."""
     return render_template("dash.html",
                            site_title=ui_settings.load().get("site_title", "SDR"))
+
+
+SCANNER_API_URL = "http://192.168.6.83:8081"
+
+
+@app.route("/api/scanner/<path:subpath>", methods=["GET", "POST"])
+def scanner_gateway(subpath):
+    """Phase-1 gateway: proxy to the scanner-api (.83:8081) so the unified GUI has
+    ONE origin for scanner state/control (status, calls, transcribe, monitor).
+    Powers the read-only P25 view today; R2 preempt/activate actions wait on the
+    Phase-4 R2-mode coordinator (the R2 is single-tuner — NOAA/P25/ATC are mutually
+    exclusive and need coordinated switching). See docs/UNIFIED_GUI_DESIGN.md."""
+    url = f"{SCANNER_API_URL}/api/{subpath}"
+    try:
+        if request.method == "POST":
+            r = requests.post(url, json=(request.get_json(silent=True) or {}), timeout=15)
+        else:
+            r = requests.get(url, params=request.args, timeout=10)
+    except requests.RequestException as e:
+        return jsonify({"ok": False, "error": f"scanner-api unreachable: {e}"}), 502
+    return Response(r.content, status=r.status_code,
+                    content_type=r.headers.get("Content-Type", "application/json"))
 
 
 # ---------------------------------------------------------------------------
