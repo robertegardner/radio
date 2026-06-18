@@ -75,7 +75,7 @@
 <body>
 <header>
   <h1>◆ {{ site_title }} — STACK</h1>
-  <div class="nav"><a href="/radio">FM tuner</a><a href="https://wx.rg2.io">weather</a><a href="https://scanner.rg2.io">P25 console</a></div>
+  <div class="nav"><a href="/radio">FM tuner</a><a href="https://wx.rg2.io">weather</a><a href="https://ems.rg2.io">scanner</a></div>
 </header>
 <div class="wrap">
   <div class="strip" id="strip"></div>
@@ -116,7 +116,7 @@
     <div class="state" id="p25-state"></div>
     <div class="row"><button class="btn" id="p25-activate" onclick="r2mode('p25')">⚡ Activate P25 (preempt R2)</button>
       <button class="btn primary" onclick="play('p25','/ems.mp3')">▶ Listen</button>
-      <a class="btn" href="https://scanner.rg2.io" target="_blank">op25 console ↗</a></div>
+      <a class="btn" href="https://ems.rg2.io" target="_blank">scanner UI ↗</a></div>
     <div class="note"><b>Preempts NOAA</b> on the R2 (single-tuner). Activating bounces the source fresh + cold-starts op25 — the control channel takes <b>~60–90 s</b> to lock (tsbks climb). Stop = switch back to NOAA. Live status proxies through the <code>/api/scanner</code> gateway.</div>
   </div>
 
@@ -171,16 +171,14 @@ function play(id,mount){ playingId=id;
 
 // R2-mode coordinator: NOAA <-> P25 (single-tuner discone; preempt on demand).
 async function r2mode(m){
-  if(m==='p25' && !confirm('Activate P25? This PREEMPTS NOAA on the R2 (weather alerts pause) and op25 takes ~60-90s to lock the control channel.')) return;
-  if(m==='noaa' && !confirm('Switch the R2 back to NOAA? This stops P25.')) return;
   const el=document.getElementById(m+'-activate'); if(el){ el.textContent='switching…'; el.disabled=true; }
   try{ const r=await fetch('/api/scanner/r2/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
        const j=await r.json(); if(!j.ok) throw new Error(j.msg||j.error||'failed'); }
   catch(e){ alert('R2 switch failed: '+e.message); }
 }
 async function atcTune(){
-  const f=document.getElementById('atc-freq').value.trim(); if(!f) return;
-  if(!confirm(`Tune ATC ${f} MHz (AM)? This PREEMPTS the R2 (NOAA/P25) and bounces the source.`)) return;
+  const f=document.getElementById('atc-freq').value.trim();
+  if(!f){ alert('Enter an airband frequency (MHz) or tap a preset first.'); return; }
   const el=document.getElementById('atc-activate'); if(el){ el.textContent='tuning…'; el.disabled=true; }
   try{ const r=await fetch('/api/scanner/r2/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'atc',freq:f+'M',audio_mode:'am'})});
        const j=await r.json(); if(!j.ok) throw new Error(j.msg||j.error||'failed'); play('atc','/scanner-atc.mp3'); }
@@ -204,7 +202,7 @@ async function doTune(body,label){
 }
 function setAmAnt(a){ amAnt=a; document.querySelectorAll('.am-ant').forEach(b=>b.classList.toggle('on',b.dataset.ant===a)); }
 document.querySelectorAll('.am-ant').forEach(b=>b.onclick=()=>setAmAnt(b.dataset.ant)); setAmAnt('Antenna A');
-function atcPreset(f){ document.getElementById('atc-freq').value=f; }
+function atcPreset(f){ document.getElementById('atc-freq').value=f; atcTune(); }
 
 function stateLine(s){
   if(!s) return '<span class="dot"></span> unknown';
