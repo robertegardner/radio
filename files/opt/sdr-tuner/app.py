@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """SDR Tuner Flask UI."""
+import collections
 import json
 import os
 import shutil
@@ -120,7 +121,62 @@ def current_antenna() -> str:
     a = ui_settings.load().get("antenna", DEFAULT_ANTENNA)
     return a if a in ALLOWED_ANTENNAS else DEFAULT_ANTENNA
 
+# ---------------------------------------------------------------------------
+# Debug activity log — the /dash debug window. The radio app is the unified
+# gateway, so it sees the control plane: FM/AM tunes (-> dx-R2 in the attic),
+# antenna/bitrate/stereo, and every scanner-api gateway call (-> .83 -> R2). It
+# also emits stack-state transitions (mounts going live/idle, R2 mode changes)
+# so the attic-side EFFECTS show too. In-memory ring; polled incrementally.
+DEBUG_LOG = collections.deque(maxlen=400)
+_dbg_seq = [0]
+_dbg_last_state = {}
+
+
+def debug_event(comp, action, detail="", status=""):
+    _dbg_seq[0] += 1
+    DEBUG_LOG.append({"seq": _dbg_seq[0], "t": time.strftime("%H:%M:%S"),
+                      "comp": comp, "action": action,
+                      "detail": str(detail)[:120], "status": str(status)})
+
+
 app = Flask(__name__)
+
+
+# Skip the high-frequency poll GETs so the debug feed shows commands, not noise.
+_DBG_SKIP = {"/api/status", "/api/now_playing", "/api/stack-state", "/api/debug-log",
+             "/api/scan_status", "/api/rfi_status", "/api/art", "/api/scanner/status",
+             "/api/scanner/r2/state", "/", "/dash", "/radio", "/wxsat", "/multi"}
+
+
+@app.after_request
+def _dbg_capture(resp):
+    try:
+        p = request.path
+        if request.method == "GET" and (p in _DBG_SKIP or p.startswith("/static")):
+            return resp
+        if request.method != "POST" and not p.startswith("/api/scanner/"):
+            return resp
+        comp = "rack→.83" if p.startswith("/api/scanner/") else "radio"
+        detail = ""
+        if request.is_json:
+            j = request.get_json(silent=True)
+            if isinstance(j, dict):
+                detail = " ".join(f"{k}={v}" for k, v in list(j.items())[:5]
+                                  if "pass" not in k.lower())
+        debug_event(comp, f"{request.method} {p}", detail, resp.status_code)
+    except Exception:  # noqa: BLE001 — never let logging break a response
+        pass
+    return resp
+
+
+@app.route("/api/debug-log")
+def api_debug_log():
+    try:
+        since = int(request.args.get("since", "0"))
+    except ValueError:
+        since = 0
+    return jsonify({"events": [e for e in DEBUG_LOG if e["seq"] > since],
+                    "seq": _dbg_seq[0]})
 
 
 @app.before_request
@@ -502,6 +558,15 @@ def api_stack_state():
         "hf-plus": {"role": "am" if (band == "am" and src == "hf-plus" and "/fm.mp3" in live) else "idle"},
         "r2":      {"role": r2_role, "preemptible": ["p25", "atc"]},
     }
+    # Emit transitions to the debug log so the attic-side effects (mounts going
+    # live/idle, the R2/dx-R2 changing role) show alongside the issued commands.
+    snap = {s["id"]: ("live" if s["live"] else "idle") for s in streams}
+    snap["dev:r2"] = r2_role
+    snap["dev:dx-r2"] = devices["dx-r2"]["role"]
+    for k, v in snap.items():
+        if _dbg_last_state.get(k, v) != v:
+            debug_event("stack", f"{k}: {_dbg_last_state[k]} → {v}")
+        _dbg_last_state[k] = v
     return jsonify({"streams": streams, "devices": devices, "icecast_ok": bool(live)})
 
 

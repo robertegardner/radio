@@ -58,6 +58,18 @@
   .foot code,.note code { color:var(--amber-dim); }
   a { color:var(--amber-dim); }
   .kv { color:var(--faint); } .kv b { color:var(--text); font-weight:600; }
+  /* debug window */
+  #dbg-toggle{position:fixed;bottom:14px;right:14px;z-index:50;background:var(--panel);border:1px solid var(--amber-dim);color:var(--amber);border-radius:50%;width:42px;height:42px;font-size:1.15rem;cursor:pointer;}
+  #dbg-toggle:hover{border-color:var(--amber);}
+  #dbg-panel{position:fixed;left:0;right:0;bottom:0;height:40vh;background:#0a0806;border-top:2px solid var(--amber-dim);z-index:49;display:none;flex-direction:column;}
+  #dbg-panel.on{display:flex;}
+  .dbg-head{padding:.5rem .8rem;border-bottom:1px solid var(--line);color:var(--amber);font-size:.85rem;display:flex;gap:.6rem;align-items:center;}
+  .dbg-head .kv{margin-right:auto;}
+  #dbg-log{flex:1;overflow-y:auto;padding:.5rem .8rem;font-size:.74rem;line-height:1.55;}
+  .dbg-row{white-space:nowrap;}
+  .dbg-row .t{color:var(--faint);} .dbg-row .a{color:var(--text);} .dbg-row .d{color:var(--faint);} .dbg-row .c{font-weight:600;}
+  .dbg-row.radio .c{color:#6fb3ff;} .dbg-row.stack .c{color:var(--live);} .dbg-row.rack .c{color:var(--amber);}
+  .dbg-row .s-ok{color:var(--live);} .dbg-row .s-err{color:var(--warn);}
 </style>
 </head>
 <body>
@@ -116,11 +128,11 @@
       <span class="chip" onclick="atcPreset('133.65')">Approach 133.65</span>
       <span class="chip" onclick="atcPreset('121.6')">Ground 121.6</span></div></div>
     <div class="row"><input type="number" id="atc-freq" step="0.025" placeholder="120.55"><span class="kv">MHz</span>
-      <button class="btn" disabled title="Phase-4 R2 coordinator">Tune (Phase 4)</button></div>
+      <button class="btn" id="atc-activate" onclick="atcTune()">⚡ Tune ATC (preempt R2)</button></div>
     <div class="state" id="atc-state"></div>
     <div class="row"><button class="btn primary" onclick="play('atc','/scanner-atc.mp3')">▶ Listen</button>
-      <a class="btn" href="https://ems.rg2.io" target="_blank">Tune via scanner UI ↗</a></div>
-    <div class="note">On-demand AM, <b>preempts P25/NOAA</b>. Tuning currently lives on the scanner UI; the unified tune button waits on the <span class="p4">Phase-4 R2 coordinator</span> (so it can free the R2 from whatever holds it — incl. the NOAA experiment).</div>
+      <a class="btn" href="https://ems.rg2.io" target="_blank">scanner UI ↗</a></div>
+    <div class="note">On-demand AM airband — <b>preempts P25/NOAA</b> via the R2-mode coordinator (stops the current holder, bounces the source, tunes). Stop = back to NOAA. Presets above fill the box.</div>
   </div>
 
   <div class="player">
@@ -128,6 +140,13 @@
     <audio id="audio" controls preload="none"></audio>
   </div>
   <div class="foot">Phase-1 · FM/AM tune live (radio API); NOAA/P25/ATC show live state via <code>/api/stack-state</code> + the <code>/api/scanner</code> gateway; R2 source switching is Phase 4. See <code>docs/UNIFIED_GUI_DESIGN.md</code>.</div>
+</div>
+<button id="dbg-toggle" onclick="toggleDbg()" title="Debug — live stack activity">🛠</button>
+<div id="dbg-panel">
+  <div class="dbg-head"><span>🛠 Stack activity</span><span class="kv">commands rack ↔ attic + transitions — the radio hub's view</span>
+    <button class="btn" onclick="document.getElementById('dbg-log').innerHTML='';">clear</button>
+    <button class="btn" onclick="toggleDbg()">× close</button></div>
+  <div id="dbg-log"></div>
 </div>
 <script>
 const ICECAST="https://icecast.rg2.io";
@@ -158,6 +177,14 @@ async function r2mode(m){
   try{ const r=await fetch('/api/scanner/r2/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
        const j=await r.json(); if(!j.ok) throw new Error(j.msg||j.error||'failed'); }
   catch(e){ alert('R2 switch failed: '+e.message); }
+}
+async function atcTune(){
+  const f=document.getElementById('atc-freq').value.trim(); if(!f) return;
+  if(!confirm(`Tune ATC ${f} MHz (AM)? This PREEMPTS the R2 (NOAA/P25) and bounces the source.`)) return;
+  const el=document.getElementById('atc-activate'); if(el){ el.textContent='tuning…'; el.disabled=true; }
+  try{ const r=await fetch('/api/scanner/r2/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'atc',freq:f+'M',audio_mode:'am'})});
+       const j=await r.json(); if(!j.ok) throw new Error(j.msg||j.error||'failed'); play('atc','/scanner-atc.mp3'); }
+  catch(e){ alert('ATC tune failed: '+e.message); }
 }
 
 async function tuneFM(){
@@ -213,6 +240,26 @@ async function refresh(){
        const na=document.getElementById('noaa-activate'), pa=document.getElementById('p25-activate');
        if(na){ na.disabled=false; na.classList.toggle('on',m==='noaa'); na.textContent=(m==='noaa')?'R2: NOAA ✓':'Set R2 → NOAA'; }
        if(pa){ pa.disabled=false; pa.classList.toggle('on',m==='p25'); pa.textContent=(m==='p25')?'P25 active ✓':'⚡ Activate P25 (preempt R2)'; }
+       const aa=document.getElementById('atc-activate');
+       if(aa){ aa.disabled=false; aa.classList.toggle('on',m==='atc'); aa.textContent=(m==='atc')?'ATC active ✓':'⚡ Tune ATC (preempt R2)'; }
+  }catch(e){}
+}
+// Debug window — live stack activity (commands + transitions) via /api/debug-log.
+let dbgOn=false, dbgSeq=0, dbgTimer=null;
+function toggleDbg(){ dbgOn=!dbgOn; document.getElementById('dbg-panel').classList.toggle('on',dbgOn);
+  if(dbgOn){ pollDbg(); dbgTimer=setInterval(pollDbg,2000); } else { clearInterval(dbgTimer); dbgTimer=null; } }
+async function pollDbg(){
+  try{ const d=await(await fetch('/api/debug-log?since='+dbgSeq)).json();
+    const log=document.getElementById('dbg-log'); let added=false;
+    (d.events||[]).forEach(e=>{ dbgSeq=e.seq; added=true;
+      const cls=e.comp.indexOf('rack')>=0?'rack':(e.comp==='stack'?'stack':'radio');
+      let s=''; if(e.status) s=' <span class="'+(e.status==='200'?'s-ok':'s-err')+'">'+e.status+'</span>';
+      const r=document.createElement('div'); r.className='dbg-row '+cls;
+      r.innerHTML='<span class="t">'+e.t+'</span> <span class="c">'+e.comp.replace('→','>')+'</span> <span class="a">'+e.action+'</span> <span class="d">'+(e.detail||'')+'</span>'+s;
+      log.appendChild(r);
+    });
+    while(log.childElementCount>400) log.removeChild(log.firstChild);
+    if(added) log.scrollTop=log.scrollHeight;
   }catch(e){}
 }
 refresh(); setInterval(refresh,3000);
