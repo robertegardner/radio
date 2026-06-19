@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """SDR Tuner Flask UI."""
+import collections
 import json
 import os
 import shutil
@@ -100,20 +101,82 @@ def pilot_state() -> dict:
     return out
 
 
-# FM antenna port on the dx-R2 — all three selectable so you can A/B/C them:
-#   A = Shakespeare 5120 + FM bandpass (the normal FM antenna)
-#   B = 137 MHz dipole + Sawbird LNA (broadband enough to try; LNA may help weak)
-#   C = long-wire (the AM antenna; usually poor for FM, but offered for comparison)
-ALLOWED_ANTENNAS = ["Antenna A", "Antenna B", "Antenna C"]
+# Antenna selector. A/B/C are the dx-R2's three software-selectable ports; "HF+"
+# is a SEPARATE device (the Airspy HF+ on the YouLoop, :55002) and is AM-only —
+# the YouLoop is an HF/MW antenna, so FM/HD always run on the dx-R2. write_env()
+# maps the selection to SOURCE + the hardware antenna name.
+#   A   = Shakespeare 5120 + FM bandpass (the FM antenna)
+#   B   = AM loop + 9:1 balun (added 2026-06-17; strong on AM locals)
+#   C   = long-wire (fringe/high-band AM; the 06-13 dead-feed suspect)
+#   HF+ = Airspy HF+ + YouLoop (AM only; contention-free — its own device)
+DXR2_ANTENNAS    = ["Antenna A", "Antenna B", "Antenna C"]
+HFPLUS_ANTENNA   = "HF+"
+ALLOWED_ANTENNAS = DXR2_ANTENNAS + [HFPLUS_ANTENNA]
 DEFAULT_ANTENNA  = "Antenna A"
 
 
 def current_antenna() -> str:
-    """Persisted FM antenna, clamped to the allowlist. Lands in active.env ANTENNA="""
+    """Persisted antenna, clamped to the allowlist. write_env() maps it to
+    SOURCE + the hardware antenna; lands in active.env as SOURCE= + ANTENNA=."""
     a = ui_settings.load().get("antenna", DEFAULT_ANTENNA)
     return a if a in ALLOWED_ANTENNAS else DEFAULT_ANTENNA
 
+# ---------------------------------------------------------------------------
+# Debug activity log — the /dash debug window. The radio app is the unified
+# gateway, so it sees the control plane: FM/AM tunes (-> dx-R2 in the attic),
+# antenna/bitrate/stereo, and every scanner-api gateway call (-> .83 -> R2). It
+# also emits stack-state transitions (mounts going live/idle, R2 mode changes)
+# so the attic-side EFFECTS show too. In-memory ring; polled incrementally.
+DEBUG_LOG = collections.deque(maxlen=400)
+_dbg_seq = [0]
+_dbg_last_state = {}
+
+
+def debug_event(comp, action, detail="", status=""):
+    _dbg_seq[0] += 1
+    DEBUG_LOG.append({"seq": _dbg_seq[0], "t": time.strftime("%H:%M:%S"),
+                      "comp": comp, "action": action,
+                      "detail": str(detail)[:120], "status": str(status)})
+
+
 app = Flask(__name__)
+
+
+# Skip the high-frequency poll GETs so the debug feed shows commands, not noise.
+_DBG_SKIP = {"/api/status", "/api/now_playing", "/api/stack-state", "/api/debug-log",
+             "/api/scan_status", "/api/rfi_status", "/api/art", "/api/scanner/status",
+             "/api/scanner/r2/state", "/", "/dash", "/radio", "/wxsat", "/multi"}
+
+
+@app.after_request
+def _dbg_capture(resp):
+    try:
+        p = request.path
+        if request.method == "GET" and (p in _DBG_SKIP or p.startswith("/static")):
+            return resp
+        if request.method != "POST" and not p.startswith("/api/scanner/"):
+            return resp
+        comp = "rack→.83" if p.startswith("/api/scanner/") else "radio"
+        detail = ""
+        if request.is_json:
+            j = request.get_json(silent=True)
+            if isinstance(j, dict):
+                detail = " ".join(f"{k}={v}" for k, v in list(j.items())[:5]
+                                  if "pass" not in k.lower())
+        debug_event(comp, f"{request.method} {p}", detail, resp.status_code)
+    except Exception:  # noqa: BLE001 — never let logging break a response
+        pass
+    return resp
+
+
+@app.route("/api/debug-log")
+def api_debug_log():
+    try:
+        since = int(request.args.get("since", "0"))
+    except ValueError:
+        since = 0
+    return jsonify({"events": [e for e in DEBUG_LOG if e["seq"] > since],
+                    "seq": _dbg_seq[0]})
 
 
 @app.before_request
@@ -189,15 +252,22 @@ def annotate_am(stations):
 
 
 def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0):
+    antenna = current_antenna()
+    # The HF+ (YouLoop) is an AM-only source; FM/HD always run on the dx-R2.
+    use_hf = (band == "am" and antenna == HFPLUS_ANTENNA)
+    source = "hf-plus" if use_hf else "dx-r2"
+    # Hardware antenna the device opens: the HF+'s single "RX", or a dx-R2 port
+    # (fall back to A if "HF+" is somehow selected while on FM/HD).
+    hw_antenna = "RX" if use_hf else (antenna if antenna in DXR2_ANTENNAS else DEFAULT_ANTENNA)
+
     if band == "am":
         mode, samp, freq_val = "am", "2000000", f"{freq}k"
-        # am_stream.py disables the hardware AGC and uses this as a fixed manual
-        # gain. On the REMOTE rack path (offset tuning, no HDR) the gain mapping
-        # is inverted vs the old Pi-local default: GAIN=20 ran hot (~+15 dBFS,
-        # clipping) while GAIN=40 sits ~-7 dBFS with clean headroom and identical
-        # ~27 dB station SNR. 40 it is. (The old "20 sweet spot, 30 overloads"
-        # note was the Pi-local HDR path — different signal chain entirely.)
-        gain = 40
+        # am_stream.py disables hardware AGC and uses GAIN as a fixed manual gain.
+        # dx-R2 (remote, offset tuning, no HDR): GAIN=40 sits ~-7 dBFS clean
+        # (GAIN=20 ran hot/clipping). HF+ YouLoop: GAIN=30 is the proven clean
+        # point (2026-06-17 bring-up). am_stream picks HW_RATE/decimation from
+        # SOURCE, so SAMP here is vestigial for AM.
+        gain = 30 if use_hf else 40
     elif hd:
         mode, samp, freq_val = "hd", "200000", f"{freq}M"
         gain = 30
@@ -214,14 +284,15 @@ def write_env(freq: str, band: str = "fm", hd: bool = False, subchannel: int = 0
         f"BITRATE={current_bitrate()}\n"
         f"STEREO={'1' if current_stereo() else '0'}\n"
         f"MOUNT=fm.mp3\n"
+        f"SOURCE={source}\n"   # am_stream.py + stream.sh's AM ffmpeg rate key off this
         f"ICECAST_PASS={ICECAST_PASS}\n"
     )
     if hd:
         content += f"SUBCHANNEL={subchannel}\n"
-    if mode in ("wbfm", "am"):  # FM + AM antenna A/B/C select (am_stream honors it).
+    if mode in ("wbfm", "am"):  # FM + AM antenna select (wbfm_stream/am_stream honor it).
         # QUOTE it — the value has a space ("Antenna A") and stream.sh sources this
         # file; unquoted, `source` runs "A" as a command (exit 127 → restart loop).
-        content += f'ANTENNA="{current_antenna()}"\n'
+        content += f'ANTENNA="{hw_antenna}"\n'
     ENV_PATH.write_text(content)
 
 
@@ -347,7 +418,12 @@ def tune():
         subchannel = int(request.form.get("subchannel", "0") or "0")
     except ValueError:
         subchannel = 0
+    # The admin AM table's Tune button passes the best antenna found by the scan
+    # (A/B/C/HF+); persist it before write_env so the tune lands on it.
+    ant = request.form.get("antenna", "").strip()
     try:
+        if ant in ALLOWED_ANTENNAS:
+            ui_settings.save({"antenna": ant})
         write_env(freq, band, hd, subchannel)
     except OSError as e:
         app.logger.error("write_env failed: %s", e)
@@ -395,6 +471,382 @@ def settings_save():
         app.logger.error("settings save failed: %s", e)
         return f"Could not save settings: {e}", 500
     return redirect(url_for("index"))
+
+
+# ---------------------------------------------------------------------------
+# Unified dashboard (Phase 0): stack-state aggregator + shell
+# ---------------------------------------------------------------------------
+ICECAST_STATUS_URL = "http://192.168.6.82:8000/status-json.xsl"
+
+# mount -> (source id, band, device). /fm.mp3 is shared by FM + AM on the dx-R2
+# (band/device resolved at runtime from active.env MODE+SOURCE). The R2 mounts are
+# mutually exclusive — NOAA is the default, P25/ATC preempt it.
+_STREAM_MAP = [
+    ("/fm.mp3",          "fm",   "fm",   "dx-r2"),
+    ("/wx.mp3",          "noaa", "noaa", "r2"),
+    ("/ems.mp3",         "p25",  "p25",  "r2"),
+    ("/scanner-atc.mp3", "atc",  "atc",  "r2"),
+]
+
+
+def _active_source() -> str:
+    """SOURCE= from active.env (dx-r2|hf-plus); '' if absent."""
+    try:
+        for line in ENV_PATH.read_text().splitlines():
+            if line.startswith("SOURCE="):
+                return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return ""
+
+
+def _r2_mode():
+    """Authoritative R2 mode (noaa|p25|atc) from the single-tuner coordinator on .83.
+    The icecast mounts can't tell us: /ems.mp3 + /scanner-atc.mp3 stay published via
+    liquidsoap mksafe even when idle, so they'd read 'live' on the wrong mode.
+    Returns None if the coordinator is unreachable (caller falls back to mounts)."""
+    try:
+        return requests.get(f"{SCANNER_API_URL}/api/r2/state", timeout=3).json().get("mode")
+    except Exception:  # noqa: BLE001 — scanner-api down is a normal runtime state
+        return None
+
+
+def _icecast_mounts() -> dict:
+    """Live mounts from the rack Icecast status-json: mount -> {listeners, title}."""
+    out = {}
+    try:
+        ice = requests.get(ICECAST_STATUS_URL, timeout=4).json().get("icestats", {})
+        srcs = ice.get("source", [])
+        if isinstance(srcs, dict):
+            srcs = [srcs]
+        for s in srcs:
+            url = s.get("listenurl") or ""
+            mount = "/" + url.rsplit("/", 1)[-1] if url else s.get("mount", "")
+            out[mount] = {"listeners": s.get("listeners", 0),
+                          "title": s.get("title") or s.get("server_name") or ""}
+    except Exception:  # noqa: BLE001 — icecast unreachable is a normal runtime state
+        pass
+    return out
+
+
+@app.route("/api/stack-state")
+def api_stack_state():
+    """Read-only aggregate of what's live across the whole stack: icecast mounts +
+    per-device role/contention. The unified GUI's active badges + preempt confirms
+    are pure functions of this (see docs/UNIFIED_GUI_DESIGN.md). Phase 0."""
+    live = _icecast_mounts()
+    freq, band, _hd, _sub = current_tune()
+    src = _active_source()
+    # /ems.mp3 stays published via liquidsoap mksafe even when op25 isn't decoding,
+    # so it's the R2's FALLBACK; /wx.mp3 + /scanner-atc.mp3 are only live when their
+    # service actually holds the single-tuner R2. (True P25-decode state — vs an
+    # idle silent mount — needs the scanner-api; that's the Phase-1 gateway.)
+    # The coordinator is authoritative (the single-tuner R2 is in exactly one mode);
+    # the mksafe-padded mounts only serve as a fallback when .83 is unreachable.
+    r2_role = _r2_mode() or ("noaa" if "/wx.mp3" in live else
+                             "atc" if "/scanner-atc.mp3" in live else
+                             "p25" if "/ems.mp3" in live else "idle")
+    streams = []
+    for mount, sid, sband, dev in _STREAM_MAP:
+        m = live.get(mount)
+        e = {"id": sid, "band": sband, "mount": mount, "device": dev,
+             "listeners": (m or {}).get("listeners", 0), "title": (m or {}).get("title", "")}
+        if dev == "r2":
+            e["live"] = (r2_role == sid)          # which source actually holds the R2
+            if sid != "noaa":
+                e["preempts"] = ["noaa"]
+        else:
+            e["live"] = m is not None
+        if mount == "/fm.mp3":
+            # this mount carries FM or AM per the current tune; AM may be on the
+            # HF+ (SOURCE=hf-plus), which frees the dx-R2.
+            e["band"] = e["id"] = band or "fm"
+            e["freq"] = freq
+            e["antenna"] = current_antenna()
+            e["device"] = "hf-plus" if (band == "am" and src == "hf-plus") else "dx-r2"
+        streams.append(e)
+    fm_on_dxr2 = "/fm.mp3" in live and not (band == "am" and src == "hf-plus")
+    devices = {
+        "dx-r2":   {"role": (band or "fm") if fm_on_dxr2 else "idle", "busy": fm_on_dxr2},
+        "hf-plus": {"role": "am" if (band == "am" and src == "hf-plus" and "/fm.mp3" in live) else "idle"},
+        "r2":      {"role": r2_role, "preemptible": ["p25", "atc"]},
+    }
+    # Emit transitions to the debug log so the attic-side effects (mounts going
+    # live/idle, the R2/dx-R2 changing role) show alongside the issued commands.
+    snap = {s["id"]: ("live" if s["live"] else "idle") for s in streams}
+    snap["dev:r2"] = r2_role
+    snap["dev:dx-r2"] = devices["dx-r2"]["role"]
+    for k, v in snap.items():
+        if _dbg_last_state.get(k, v) != v:
+            debug_event("stack", f"{k}: {_dbg_last_state[k]} → {v}")
+        _dbg_last_state[k] = v
+    return jsonify({"streams": streams, "devices": devices, "icecast_ok": bool(live)})
+
+
+@app.route("/dash")
+def dash():
+    """Unified dashboard shell — source tabs over /api/stack-state + the gateway."""
+    return render_template("dash.html",
+                           site_title=ui_settings.load().get("site_title", "SDR"))
+
+
+SCANNER_API_URL = "http://192.168.6.83:8081"
+
+
+@app.route("/api/scanner/<path:subpath>", methods=["GET", "POST"])
+def scanner_gateway(subpath):
+    """Phase-1 gateway: proxy to the scanner-api (.83:8081) so the unified GUI has
+    ONE origin for scanner state/control (status, calls, transcribe, monitor).
+    Powers the read-only P25 view today; R2 preempt/activate actions wait on the
+    Phase-4 R2-mode coordinator (the R2 is single-tuner — NOAA/P25/ATC are mutually
+    exclusive and need coordinated switching). See docs/UNIFIED_GUI_DESIGN.md."""
+    url = f"{SCANNER_API_URL}/api/{subpath}"
+    try:
+        if request.method == "POST":
+            r = requests.post(url, json=(request.get_json(silent=True) or {}), timeout=15)
+        else:
+            r = requests.get(url, params=request.args, timeout=10)
+    except requests.RequestException as e:
+        return jsonify({"ok": False, "error": f"scanner-api unreachable: {e}"}), 502
+    return Response(r.content, status=r.status_code,
+                    content_type=r.headers.get("Content-Type", "application/json"))
+
+
+# ---------------------------------------------------------------------------
+# Live A/B antenna comparison: same AM station on two devices at once — HF+
+# YouLoop (-> /am-a.mp3) vs dx-R2 Antenna B (-> /am-b.mp3) — for an instant
+# in-GUI A|B switch. The dx-R2 side preempts FM (single tuner); stop restores it.
+# ---------------------------------------------------------------------------
+AB_ENV = {"a": Path("/etc/sdr-streams/am-compare-a.env"),
+          "b": Path("/etc/sdr-streams/am-compare-b.env")}
+AB_LABELS = {"a": "HF+ YouLoop", "b": "dx-R2 loop+balun (Ant B)"}
+
+
+def _ab_freq():
+    try:
+        for line in AB_ENV["a"].read_text().splitlines():
+            if line.startswith("FREQ="):
+                return line.split("=", 1)[1].strip().strip('"').rstrip("kK")
+    except OSError:
+        return None
+    return None
+
+
+@app.route("/api/abcompare/state")
+def api_abcompare_state():
+    a, b = is_active("am-compare-a.service"), is_active("am-compare-b.service")
+    return jsonify({"active": a == "active" or b == "active", "a": a, "b": b,
+                    "freq": _ab_freq(), "labels": AB_LABELS})
+
+
+@app.route("/api/abcompare/start", methods=["POST"])
+def api_abcompare_start():
+    freq = str((request.get_json(silent=True) or {}).get("freq", "")).strip().rstrip("kK")
+    if not freq:
+        return jsonify({"ok": False, "error": "freq (kHz) required"}), 400
+    try:
+        AB_ENV["a"].write_text(f'SOURCE=hf-plus\nFREQ={freq}k\nGAIN=30\nANTENNA="RX"\n')
+        AB_ENV["b"].write_text(f'SOURCE=dx-r2\nFREQ={freq}k\nGAIN=40\nANTENNA="Antenna B"\n')
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    sysctl("stop", "fm-watch.timer")          # the dx-R2 side preempts FM
+    sysctl("stop", SERVICE)
+    sysctl("start", "am-compare-a.service")
+    sysctl("start", "am-compare-b.service")
+    debug_event("radio", "A/B compare START", f"{freq} kHz · HF+ vs dx-R2/B (FM off)")
+    return jsonify({"ok": True, "freq": freq})
+
+
+@app.route("/api/abcompare/stop", methods=["POST"])
+def api_abcompare_stop():
+    sysctl("stop", "am-compare-a.service")
+    sysctl("stop", "am-compare-b.service")
+    sysctl("start", SERVICE)                  # restore FM
+    sysctl("start", "fm-watch.timer")
+    debug_event("radio", "A/B compare STOP", "FM restored")
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# ATC / airband presets — user-editable, persisted server-side (shared across
+# devices). Seeded from the V1 scanner aviation list; the /dash ATC tab renders
+# + edits these. Freq is MHz (the ATC tune appends "M"); mode is always AM.
+# ---------------------------------------------------------------------------
+ATC_PRESETS_PATH = Path("/var/lib/sdr-streams/atc_presets.json")
+DEFAULT_ATC_PRESETS = [
+    {"label": "KCGI Tower",      "freq": "125.525",  "sub": "primary"},
+    {"label": "KCGI Ground",     "freq": "121.6",    "sub": "0700–1700"},
+    {"label": "KCGI ATIS/ASOS",  "freq": "120.55",   "sub": "test — may be phone-only"},
+    {"label": "Memphis Center",  "freq": "131.36",   "sub": "strongest ARTCC sector"},
+    {"label": "Memphis Center",  "freq": "132.5363", "sub": "verified ARTCC sector"},
+    {"label": "Memphis ARTCC",   "freq": "133.65",   "sub": "Paducah RCAG"},
+    {"label": "Emergency Guard", "freq": "121.5",    "sub": "monitored"},
+]
+
+
+def _load_atc_presets():
+    try:
+        data = json.loads(ATC_PRESETS_PATH.read_text())
+        if isinstance(data, dict):
+            data = data.get("presets", [])
+        if isinstance(data, list):
+            return data
+    except (OSError, ValueError):
+        pass
+    _save_atc_presets(DEFAULT_ATC_PRESETS)
+    return DEFAULT_ATC_PRESETS
+
+
+def _save_atc_presets(presets):
+    ATC_PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ATC_PRESETS_PATH.write_text(json.dumps({"presets": presets}, indent=2))
+
+
+@app.route("/api/atc-presets", methods=["GET", "POST", "PUT"])
+def api_atc_presets():
+    if request.method == "GET":
+        return jsonify({"presets": _load_atc_presets()})
+    raw = (request.get_json(silent=True) or {}).get("presets")
+    if not isinstance(raw, list):
+        return jsonify({"ok": False, "error": "presets (list) required"}), 400
+    clean = []
+    for p in raw:
+        if not isinstance(p, dict):
+            continue
+        label = str(p.get("label", "")).strip()
+        freq = str(p.get("freq", "")).strip().rstrip("Mm")
+        if not label or not freq:
+            continue
+        try:
+            float(freq)
+        except ValueError:
+            continue
+        clean.append({"label": label, "freq": freq, "sub": str(p.get("sub", "")).strip()})
+    try:
+        _save_atc_presets(clean)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    debug_event("radio", "ATC presets saved", f"{len(clean)} presets")
+    return jsonify({"ok": True, "presets": clean})
+
+
+# ---------------------------------------------------------------------------
+# ATC recording + scheduling. These endpoints only manage the schedule/config
+# and serve recordings for playback; the actual tune+record+prune is done by the
+# atc-rec-tick (a 1-min systemd timer) reconciling the schedule against the clock.
+# One recording at a time (the R2 is single-tuner). Times are epoch seconds.
+# ---------------------------------------------------------------------------
+ATC_REC_DIR       = Path("/var/lib/sdr-streams/atc-rec")
+ATC_SCHEDULE_PATH = ATC_REC_DIR / "schedule.json"
+ATC_REC_CFG_PATH  = ATC_REC_DIR / "config.json"
+ATC_REC_DEFAULT_RETENTION = 14
+
+
+def _atc_rec_load():
+    try:
+        return json.loads(ATC_SCHEDULE_PATH.read_text()).get("jobs", [])
+    except (OSError, ValueError):
+        return []
+
+
+def _atc_rec_save(jobs):
+    ATC_REC_DIR.mkdir(parents=True, exist_ok=True)
+    ATC_SCHEDULE_PATH.write_text(json.dumps({"jobs": jobs}, indent=2))
+
+
+def _atc_rec_cfg():
+    try:
+        return {"retention_days": int(json.loads(ATC_REC_CFG_PATH.read_text())["retention_days"])}
+    except (OSError, ValueError, KeyError):
+        return {"retention_days": ATC_REC_DEFAULT_RETENTION}
+
+
+def _atc_rec_decorate(jobs):
+    out = []
+    for j in jobs:
+        d = dict(j)
+        f = ATC_REC_DIR / f"{j['id']}.mp3"
+        d["has_file"] = f.exists()
+        d["bytes"] = f.stat().st_size if f.exists() else 0
+        out.append(d)
+    return out
+
+
+@app.route("/api/atc-rec")
+def api_atc_rec():
+    return jsonify({"jobs": _atc_rec_decorate(_atc_rec_load()),
+                    "config": _atc_rec_cfg(), "now": int(time.time())})
+
+
+@app.route("/api/atc-rec/schedule", methods=["POST"])
+def api_atc_rec_schedule():
+    b = request.get_json(silent=True) or {}
+    try:
+        start = int(float(b.get("start") or time.time()))
+        dur = int(float(b.get("duration_min") or 0))
+        end = int(float(b["end"])) if b.get("end") else start + dur * 60
+        freq = str(b.get("freq", "")).strip().rstrip("Mm")
+        float(freq)
+    except (ValueError, KeyError, TypeError):
+        return jsonify({"ok": False, "error": "freq + start + (end or duration_min) required"}), 400
+    if end <= start or end <= time.time():
+        return jsonify({"ok": False, "error": "the window must end in the future"}), 400
+    label = str(b.get("label", "")).strip() or f"ATC {freq}"
+    job = {"id": f"atc-{int(time.time() * 1000)}", "label": label, "freq": freq,
+           "start": start, "end": end, "status": "scheduled", "created": int(time.time())}
+    jobs = _atc_rec_load()
+    jobs.append(job)
+    _atc_rec_save(jobs)
+    debug_event("radio", "ATC rec scheduled", f"{label} {freq}MHz · {(end - start) // 60}min")
+    return jsonify({"ok": True, "job": job})
+
+
+@app.route("/api/atc-rec/cancel", methods=["POST"])
+def api_atc_rec_cancel():
+    jid = str((request.get_json(silent=True) or {}).get("id", ""))
+    jobs = _atc_rec_load()
+    for j in jobs:
+        if j["id"] == jid and j["status"] == "recording":
+            j["end"] = int(time.time())          # the tick stops + finalizes it
+        elif j["id"] == jid and j["status"] == "scheduled":
+            j["status"] = "cancelled"
+    _atc_rec_save(jobs)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/atc-rec/delete", methods=["POST"])
+def api_atc_rec_delete():
+    jid = str((request.get_json(silent=True) or {}).get("id", ""))
+    jobs = _atc_rec_load()
+    job = next((j for j in jobs if j["id"] == jid), None)
+    if job and job.get("status") == "recording":
+        return jsonify({"ok": False, "error": "still recording — cancel it first"}), 409
+    try:
+        (ATC_REC_DIR / f"{jid}.mp3").unlink(missing_ok=True)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    _atc_rec_save([j for j in jobs if j["id"] != jid])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/atc-rec/config", methods=["POST"])
+def api_atc_rec_config():
+    try:
+        days = max(1, min(365, int((request.get_json(silent=True) or {}).get("retention_days"))))
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "retention_days (int) required"}), 400
+    ATC_REC_DIR.mkdir(parents=True, exist_ok=True)
+    ATC_REC_CFG_PATH.write_text(json.dumps({"retention_days": days}))
+    return jsonify({"ok": True, "retention_days": days})
+
+
+@app.route("/api/atc-rec/file/<jid>")
+def api_atc_rec_file(jid):
+    # only serve files tied to a known job id (blocks path traversal + strays)
+    if not any(j["id"] == jid for j in _atc_rec_load()):
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(ATC_REC_DIR, f"{jid}.mp3", mimetype="audio/mpeg",
+                               conditional=True, download_name=f"{jid}.mp3")
 
 
 # ---------------------------------------------------------------------------

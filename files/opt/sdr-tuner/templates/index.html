@@ -29,6 +29,11 @@
   form{display:inline}
   .bar{display:inline-block;height:6px;background:#2563eb;border-radius:3px;vertical-align:middle;margin-left:.4rem}
   .am-bar{background:#c97a3a}
+  th.ant-col{text-align:right;padding:0 .45rem;color:#999;font-weight:500}
+  td.ant-cell{text-align:right;font-variant-numeric:tabular-nums;color:#bbb;padding:0 .45rem;white-space:nowrap}
+  td.ant-cell.best{color:#a8f0bd;font-weight:600}
+  td.ant-cell .none{color:#444}
+  td.best-ant{color:#c97a3a;white-space:nowrap;font-size:.85rem}
   .band-section{margin-top:2rem}
   .band-header{display:flex;align-items:baseline;gap:1rem;margin-bottom:.4rem}
   .band-header h2{font-size:1.1rem;margin:0}
@@ -107,7 +112,7 @@
   </div>
   <form method="post" action="/stop"><button class="stop" id="stop-btn">Stop</button></form>
   <form method="post" action="/scan-fm"><button id="scan-fm-btn">Scan FM</button></form>
-  <form method="post" action="/scan-am"><button id="scan-am-btn" class="am">Scan AM</button></form>
+  <form method="post" action="/scan-am" onsubmit="return confirm('Rescan all antennas (dx-R2 A/B/C + HF+ YouLoop)? This interrupts FM for ~1–2 minutes, then restores it.')"><button id="scan-am-btn" class="am" title="Sweep the AM band on all four antennas and refresh the per-antenna table. Interrupts FM briefly.">Rescan Antennas</button></form>
   <form method="post" action="/reload-stations"><button class="subtle" title="Reload FCC + overrides JSON">Reload DB</button></form>
 </div>
 
@@ -177,18 +182,26 @@
     <span class="scanned">{% if am_scanned_at %}scanned {{ am_scanned_at }}{% else %}not yet scanned{% endif %}</span>
   </div>
   {% if am_stations %}
-  <table><thead><tr><th>Freq</th><th>Station</th><th>SNR</th><th></th></tr></thead><tbody>
+  <table><thead><tr><th>Freq</th><th>Station</th>
+    <th class="ant-col">A</th><th class="ant-col">B</th><th class="ant-col">C</th><th class="ant-col">HF+</th>
+    <th>Best</th><th></th></tr></thead><tbody>
   {% for s in am_stations %}
+    {% set ba = s.by_antenna or {} %}
+    {% set best_key = (s.antenna.split()[-1] if s.antenna else '') %}
     <tr class="{% if current_band == 'am' and current == s.freq_khz|string %}playing{% endif %}">
       <td>{{ s.freq_khz }} kHz</td>
       <td class="station">
         {% if s.call %}<span class="call">{{ s.call }}</span>{% else %}<span class="none">—</span>{% endif %}
         {% if s.city %}<span class="city">{{ s.city }}{% if s.state %}, {{ s.state }}{% endif %}</span>{% endif %}
       </td>
-      <td>{{ s.snr_db }} dB<span class="bar am-bar" style="width:{{ (s.snr_db*3)|int }}px"></span></td>
+      {% for key in ['A','B','C','HF+'] %}
+        <td class="ant-cell{% if key == best_key %} best{% endif %}">{% if ba.get(key) is not none %}{{ ba.get(key) }}{% else %}<span class="none">·</span>{% endif %}</td>
+      {% endfor %}
+      <td class="best-ant">{% if best_key == 'HF+' %}HF+{% elif best_key %}{{ best_key }}{% endif %}{% if s.snr_db is not none %} {{ s.snr_db }}dB{% endif %}</td>
       <td><form method="post" action="/tune">
         <input type="hidden" name="freq" value="{{ s.freq_khz }}">
         <input type="hidden" name="band" value="am">
+        <input type="hidden" name="antenna" value="{{ s.antenna }}">
         <button class="am">Tune</button></form></td>
     </tr>
   {% endfor %}

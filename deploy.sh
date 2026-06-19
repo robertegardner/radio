@@ -22,8 +22,8 @@ SRC="$REPO/files"
 if [[ "${1:-}" == "--rack" ]]; then
   echo "Deploying APP payload to the rack (radio-compute, .84) — stream.sh + Pi-only units skipped..."
   for f in app.py station_db.py hd_stream.py rds_watcher.py fcc_fetch.py fm_scan.py \
-           am_scan.py am_stream.py am_diag_scan.py caption_orchestrator.py ui_settings.py \
-           wbfm_stream.py stereo_decode.py; do
+           am_scan.py am_scan_merge.py am_scan_all.sh am_stream.py am_diag_scan.py \
+           caption_orchestrator.py ui_settings.py wbfm_stream.py stereo_decode.py; do
     install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/$f" "/opt/sdr-tuner/$f"
   done
   install -d -m 0755 -o radio -g radio /opt/sdr-tuner/templates

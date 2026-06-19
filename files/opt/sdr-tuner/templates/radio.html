@@ -257,6 +257,11 @@
   .hd-subch-group { display: flex; gap: .4rem; }
   .btn.hd-ch { min-width: 52px; font-size: .8rem; font-family: 'Courier New', monospace; letter-spacing: .04em; }
   .btn.hd-ch.active { background: var(--amber); color: #1a1208; border-color: var(--amber); }
+  .ant-row { display: flex; flex-direction: column; gap: .35rem; margin-top: .5rem; }
+  .ant-group { display: flex; gap: .4rem; }
+  .btn.ant-btn { flex: 1; min-width: 44px; font-size: .8rem; font-family: 'Courier New', monospace; letter-spacing: .04em; }
+  .btn.ant-btn.active { background: var(--amber); color: #1a1208; border-color: var(--amber); }
+  .btn.ant-btn:disabled { opacity: .4; cursor: not-allowed; }
   .btn.qual-ch { min-width: 48px; font-size: .8rem; font-family: 'Courier New', monospace; letter-spacing: .04em; }
   .btn.qual-ch.active { background: var(--amber); color: #1a1208; border-color: var(--amber); }
 
@@ -509,7 +514,6 @@
       <button class="btn toggle" id="viz-toggle" title="Audio visualizer — tap the background for fullscreen, double-tap for next pattern" style="display:none">VIZ</button>
       <button class="btn toggle" id="duck-toggle" title="Duck on talk — near-mute commercials/DJ talk, prompt restore on music">DUCK</button>
       <button class="btn toggle" id="mono-toggle" title="Mono — drops the noisy 38 kHz stereo subcarrier; much cleaner on weak/talk stations">MONO</button>
-      <button class="btn toggle" id="ant-toggle" title="FM/AM antenna A/B/C (A=Shakespeare, B=dipole+LNA, C=long-wire). Tap to cycle. Strong AM locals are best on A.">ANT A</button>
     </div>
     <div class="ctrl-group">
       <button class="btn primary" id="play-btn" title="Play/Pause">▶</button>
@@ -521,6 +525,19 @@
           <div class="lvl-ch" id="lvl-r"><span class="lvl-fill"></span><span class="lvl-tag">R</span></div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Antenna selector: A/B/C are the dx-R2's ports; HF+ is the Airspy HF+ on
+       the YouLoop (AM only, its own device — no FM interruption). Tap to switch;
+       restarts the stream. -->
+  <div class="ant-row" id="ant-row">
+    <div class="presets-label">Antenna</div>
+    <div class="ant-group">
+      <button class="btn ant-btn" data-ant="Antenna A" title="Shakespeare 5120 + FM bandpass — the FM antenna">A</button>
+      <button class="btn ant-btn" data-ant="Antenna B" title="AM loop + 9:1 balun — strong on AM locals (e.g. 960 KSIM, 1220)">B</button>
+      <button class="btn ant-btn" data-ant="Antenna C" title="Long-wire — fringe / high-band AM">C</button>
+      <button class="btn ant-btn" data-ant="HF+" title="Airspy HF+ + YouLoop — AM only; its own device (no FM interruption). Best on some AM (e.g. 1230 KZYM, 1550).">HF+</button>
     </div>
   </div>
 
@@ -668,15 +685,15 @@ function renderPresets() {
 
     const btn = document.createElement('button');
     btn.className = 'preset' + (p ? '' : ' empty') + (isActive ? ' active' : '');
-    // Per-preset FM settings badge: antenna (A/B/C) + stereo/mono.
+    // Per-preset badge: antenna (A/B/C/HF+) for FM + AM, plus stereo/mono on FM.
     let meta = '';
-    if (p && p.band === 'fm' && p.antenna) {
-      const ant  = p.antenna.slice(-1);            // A | B | C
-      const mono = p.stereo === false;
-      meta = `<span class="pmeta">`
-           + `<span class="ant">ANT ${ant}</span>`
-           + `<span class="${mono ? 'mono' : 'stereo'}">${mono ? '◗ MONO' : '◖◗ ST'}</span>`
-           + `</span>`;
+    if (p && p.antenna && (p.band === 'fm' || p.band === 'am')) {
+      let inner = `<span class="ant">ANT ${antLabel(p.antenna)}</span>`;
+      if (p.band === 'fm') {
+        const mono = p.stereo === false;
+        inner += `<span class="${mono ? 'mono' : 'stereo'}">${mono ? '◗ MONO' : '◖◗ ST'}</span>`;
+      }
+      meta = `<span class="pmeta">${inner}</span>`;
     }
     btn.innerHTML = `
       <span class="num">${i + 1}</span>
@@ -720,8 +737,8 @@ function savePresetSlot(slot) {
                     stereo: currentStereo, antenna: currentAntenna, label };
   savePresets();
   renderPresets();
-  const ant = currentBand === 'fm' ? ` · ${currentAntenna.slice(-1)}${currentStereo ? '' : '·mono'}`
-            : currentBand === 'am' ? ` · ${currentAntenna.slice(-1)}` : '';
+  const ant = currentBand === 'fm' ? ` · ${antLabel(currentAntenna)}${currentStereo ? '' : '·mono'}`
+            : currentBand === 'am' ? ` · ${antLabel(currentAntenna)}` : '';
   showToast(`Saved to preset ${slot + 1}: ${label}${ant}`);
 }
 
@@ -833,6 +850,7 @@ function updateBandUI() {
   $('band-toggle').textContent   = currentBand.toUpperCase();
   $('band-toggle').classList.toggle('on', currentBand === 'am');
   $('unit').textContent          = currentBand === 'am' ? 'kHz' : 'MHz';
+  if (typeof updateAntUI === 'function') updateAntUI();  // HF+ is AM-only
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,7 +1098,7 @@ function renderStationsModal() {
         ${s.city ? `<span class="city">${s.city}${s.state ? ', ' + s.state : ''}</span>` : ''}
       </div>
       <span class="snr">${s.snr_db != null ? s.snr_db + ' dB' : ''}${
-        s.antenna ? ` <span class="antbadge" title="best antenna from scan">ANT ${s.antenna.slice(-1)}</span>` : ''}</span>
+        s.antenna ? ` <span class="antbadge" title="best antenna from scan">ANT ${antLabel(s.antenna)}</span>` : ''}</span>
     `;
     row.addEventListener('click', () => {
       // Auto-select the best antenna found by the all-antenna scan (FM only).
@@ -1170,14 +1188,11 @@ async function pollNowPlaying() {
     currentPilot = (currentBand === 'fm') && (d.pilot === true);
     $('stereo-led').classList.toggle('on', currentPilot);
     $('stereo-label').textContent = (currentBand === 'fm' && !currentPilot) ? 'MONO' : 'STEREO';
-    // Antenna A/B/C cycle reflects server state; FM-only.
+    // Antenna selection reflects server state. updateAntUI highlights the active
+    // button and disables HF+ off the AM band (it's an AM-only device).
     if (d.antenna) {
       currentAntenna = d.antenna;
-      const ab = $('ant-toggle');
-      const letter = d.antenna.slice(-1);            // 'A' | 'B' | 'C'
-      ab.textContent = 'ANT ' + letter;
-      ab.classList.toggle('on', letter !== 'A');     // highlight non-default
-      ab.disabled = (currentBand !== 'fm' && currentBand !== 'am');  // AM picks an antenna too
+      updateAntUI();
     }
     // Frequency display
     if (currentFreq) {
@@ -1558,17 +1573,37 @@ $('mono-toggle').addEventListener('click', () => {
   });
 });
 
-// Antenna cycle A->B->C->A: POST /api/antenna (restarts the stream).
-$('ant-toggle').addEventListener('click', () => {
-  const ab = $('ant-toggle');
-  const cur = (ab.textContent.trim().slice(-1) || 'A');     // 'A'|'B'|'C'
-  const nextLetter = {A: 'B', B: 'C', C: 'A'}[cur] || 'A';
-  applyWithResume(ab, async () => {
-    const r = await fetch('/api/antenna', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({antenna: 'Antenna ' + nextLetter}),
+// Antenna selector — discrete A / B / C / HF+ buttons. A/B/C are the dx-R2's
+// software-selectable ports; HF+ is the Airspy HF+ on the YouLoop (a separate
+// device, AM-only). POST /api/antenna restarts the stream on the chosen
+// antenna/source. antLabel maps the server's antenna name to a short badge.
+function antLabel(a) { return (a === 'HF+' || a === 'RX') ? 'HF+' : (a ? a.slice(-1) : ''); }
+
+function updateAntUI() {
+  const amBand = currentBand === 'am';
+  document.querySelectorAll('.ant-btn').forEach(btn => {
+    const a = btn.dataset.ant;
+    // HF+ is AM-only (the YouLoop is an HF/MW antenna; FM/HD run on the dx-R2).
+    btn.disabled = (a === 'HF+') && !amBand;
+    // Active highlight follows server state. In FM an HF+ selection falls back to
+    // Antenna A server-side, so show A active there.
+    let active = (a === currentAntenna) || (a === 'Antenna A' && currentAntenna === 'RX');
+    if (!amBand && currentAntenna === 'HF+') active = (a === 'Antenna A');
+    btn.classList.toggle('active', active);
+  });
+}
+
+document.querySelectorAll('.ant-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.disabled) return;
+    const ant = btn.dataset.ant;
+    applyWithResume(btn, async () => {
+      const r = await fetch('/api/antenna', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({antenna: ant}),
+      });
+      if (r.ok) { currentAntenna = ant; updateAntUI(); }
     });
-    if (r.ok) { ab.textContent = 'ANT ' + nextLetter; ab.classList.toggle('on', nextLetter !== 'A'); }
   });
 });
 

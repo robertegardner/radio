@@ -24,10 +24,16 @@ FFT_SIZE        = 4096         # frequency resolution = SAMP_RATE / FFT_SIZE ≈
 
 SRC_ENV = Path("/etc/radio-compute/source-dx-r2.env")
 
+# Optional --device-args override so the scan can target a device other than the
+# dx-R2 — e.g. the HF+ YouLoop on the remote :55002 source.
+_DEVICE_ARGS_OVERRIDE = None
+
 
 def device_args() -> str:
-    """SoapySDR device args: REMOTE (driver=remote) from the rack source env if
-    present, else local driver=sdrplay (the Pi). The rack has no local SDR."""
+    """SoapySDR device args. Priority: explicit --device-args override, then the
+    rack source env (driver=remote), else local driver=sdrplay (the Pi)."""
+    if _DEVICE_ARGS_OVERRIDE:
+        return _DEVICE_ARGS_OVERRIDE
     if SRC_ENV.exists():
         for line in SRC_ENV.read_text().splitlines():
             line = line.strip()
@@ -160,7 +166,20 @@ def main():
                     help="comma-separated antenna ports to sweep (AM is normally the "
                          "long-wire on Antenna C). >1 records the best antenna per station.")
     ap.add_argument("--out", default="/var/lib/sdr-streams/stations_am.json")
+    ap.add_argument("--device-args", default=None,
+                    help="override SoapySDR device args (e.g. the HF+ YouLoop: "
+                         "'driver=remote,remote=radio.srvr:55002,remote:driver=airspyhf'). "
+                         "Default: dx-R2 from source-dx-r2.env / local sdrplay.")
+    ap.add_argument("--rate", type=float, default=None,
+                    help="sample rate Hz (default 1e6). The HF+ caps ~912 ksps; a "
+                         "lower rate just means more band hops to cover 540-1700 kHz.")
     args = ap.parse_args()
+
+    global _DEVICE_ARGS_OVERRIDE, SAMP_RATE
+    if args.device_args:
+        _DEVICE_ARGS_OVERRIDE = args.device_args
+    if args.rate:
+        SAMP_RATE = args.rate
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     antennas = [a.strip() for a in args.antennas.split(",") if a.strip()]
