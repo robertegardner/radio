@@ -1275,6 +1275,30 @@ def api_wxsat_captures():
     return jsonify({"captures": caps})
 
 
+@app.route("/api/wxsat/products/<cid>")
+def api_wxsat_products(cid):
+    """Every image product a capture produced (raw MSU-MR channels + composites),
+    for the per-capture 'dive in' browser. Public-safe read."""
+    rec = next((c for c in _wxsat_captures() if c.get("id") == cid), None)
+    outdir = str((rec or {}).get("outdir") or "")
+    if not outdir or "/" in outdir or ".." in outdir:
+        return jsonify({"products": []})
+    base = WXSAT_DIR / outdir
+    prods = []
+    try:
+        for f in sorted(base.rglob("*.png")):
+            st = f.stat()
+            if st.st_size < 1024:
+                continue                       # SatDump writes some empty stubs
+            prods.append({"name": f.name,
+                          "rel": f.relative_to(WXSAT_DIR).as_posix(),
+                          "bytes": st.st_size})
+    except OSError:
+        pass
+    prods.sort(key=lambda p: p["bytes"], reverse=True)
+    return jsonify({"products": prods, "outdir": outdir})
+
+
 @app.route("/api/wxsat/passes")
 def api_wxsat_passes():
     data = _load_json(WXSAT_PASSES_PATH)

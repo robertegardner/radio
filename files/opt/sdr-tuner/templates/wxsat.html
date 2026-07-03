@@ -146,6 +146,13 @@
   .pv { background: none; border: 1px solid var(--line); color: var(--blue); cursor: pointer;
         border-radius: 6px; font-size: .72rem; padding: .2rem .5rem; }
   .pv:hover { border-color: var(--blue); background: rgba(109,176,240,.08); }
+  .prod-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+               gap: .7rem; padding: .8rem; max-height: 72vh; overflow-y: auto; }
+  .prod { display: block; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+          background: #0d0e10; text-decoration: none; }
+  .prod:hover { border-color: var(--blue); }
+  .prod img { display: block; width: 100%; height: 150px; object-fit: cover; background: #000; }
+  .prod .pm { font-size: .68rem; color: var(--text-dim); padding: .35rem .5rem; }
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 50;
            display: none; align-items: flex-start; justify-content: center; padding: 1.2rem; overflow: auto; }
   .modal-card { background: linear-gradient(180deg, #1a1c22 0%, var(--bg-panel) 100%);
@@ -218,6 +225,16 @@
     <h2>Past captures</h2>
     <div id="capturesWrap"><div class="empty">Loading…</div></div>
   </section>
+</div>
+
+<div class="modal" id="prodModal" style="display:none">
+  <div class="modal-card" style="max-width:900px">
+    <div class="modal-head">
+      <span class="pm-title">Capture products</span>
+      <button class="pv" id="prodClose">✕ Close</button>
+    </div>
+    <div id="prodBody" class="prod-grid"></div>
+  </div>
 </div>
 
 <div class="modal" id="passModal">
@@ -376,8 +393,9 @@ function cardHTML(c) {
       <div class="meta">${fmtLocal(c.aos_unix)} · ${elev}</div>
       ${note}
       <div class="foot">
-        <span class="badge ${oc}">${label}</span>
+        <span class="badge ${oc}">${label}${c.night ? ' 🌙' : ''}</span>
         <span style="display:flex;gap:.4rem;flex-wrap:wrap;justify-content:flex-end">
+          ${oc === 'image' && c.outdir ? `<button class="pv" data-prods="${escapeHTML(c.id)}">Channels</button>` : ''}
           ${c.has_panel ? `<button class="pv" data-pv="${escapeHTML(c.id)}">Pass view</button>` : ''}
           ${c.has_iq ? `<button class="pv" data-rb="${escapeHTML(c.id)}">${c.has_panel ? 'Rebuild' : 'Rebuild from IQ'}</button>` : ''}
           <button class="del" data-id="${escapeHTML(c.id)}">Delete</button>
@@ -407,14 +425,35 @@ document.addEventListener('click', async (e) => {
   } catch (err) { btn.disabled = false; alert('Delete failed.'); }
 });
 
-// Pass-view open/close + rebuild-from-IQ (delegated).
+// Pass-view open/close + rebuild-from-IQ + product browser (delegated).
 document.addEventListener('click', (e) => {
   const pv = e.target.closest('[data-pv]');
   if (pv) { openPassView(pv.dataset.pv); return; }
   const rb = e.target.closest('[data-rb]');
   if (rb) { rebuildFromIq(rb); return; }
+  const pr = e.target.closest('[data-prods]');
+  if (pr) { openProducts(pr.dataset.prods); return; }
   if (e.target.id === 'pmClose' || e.target.id === 'passModal') closePassView();
+  if (e.target.id === 'prodClose' || e.target.id === 'prodModal') $('prodModal').style.display = 'none';
 });
+
+// Per-capture product browser: every channel/composite the decode produced.
+async function openProducts(cid) {
+  const m = $('prodModal'), body = $('prodBody');
+  m.style.display = 'flex';
+  body.innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const j = await (await fetch('/api/wxsat/products/' + encodeURIComponent(cid))).json();
+    if (!j.products || !j.products.length) { body.innerHTML = '<div class="empty">No image products.</div>'; return; }
+    body.innerHTML = j.products.map(p => {
+      const u = '/api/wxsat/image/' + encodeURI(p.rel);
+      const mb = (p.bytes / 1048576).toFixed(1);
+      const nm = p.name.replace(/^msu_mr_/, '').replace(/_/g, ' ').replace(/\.png$/, '');
+      return `<a class="prod" href="${u}" target="_blank" rel="noopener">
+        <img loading="lazy" src="${u}"><div class="pm">${escapeHTML(nm)} · ${mb} MB</div></a>`;
+    }).join('');
+  } catch (err) { body.innerHTML = '<div class="empty">Could not load products.</div>'; }
+}
 
 async function rebuildFromIq(btn) {
   btn.disabled = true; const old = btn.textContent; btn.textContent = 'Rebuilding…';
