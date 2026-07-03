@@ -315,16 +315,19 @@ async function refreshPasses() {
     }
     let rows = passes.map(p => {
       const hi = (p.max_elev >= 40) ? ' hi' : '';
+      const el = (p.max_elev == null) ? '—' : Math.round(p.max_elev) + '°';
+      const src = escapeHTML(p.source || 'ours');
       return `<tr>
         <td class="sat">${p.satellite}</td>
         <td class="mono">${fmtLocal(p.aos_unix)}</td>
         <td class="mono">${fmtTimeOnly(p.los_unix)}</td>
         <td class="mono">${(p.duration_min ?? 0).toFixed(1)}m</td>
-        <td><span class="elev-pill${hi}">${Math.round(p.max_elev)}°</span></td>
+        <td><span class="elev-pill${hi}">${el}</span></td>
+        <td>${src}</td>
       </tr>`;
     }).join('');
     $('passesWrap').innerHTML =
-      `<table><thead><tr><th>Satellite</th><th>AOS (local)</th><th>LOS</th><th>Dur</th><th>Max el</th></tr></thead><tbody>${rows}</tbody></table>`;
+      `<table><thead><tr><th>Satellite</th><th>AOS (local)</th><th>LOS</th><th>Dur</th><th>Max el</th><th>Source</th></tr></thead><tbody>${rows}</tbody></table>`;
   } catch (e) {
     $('passesWrap').innerHTML = '<div class="empty">Could not load passes.</div>';
   }
