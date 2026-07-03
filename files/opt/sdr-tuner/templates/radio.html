@@ -418,27 +418,6 @@
   }
   .toast.show { opacity: 1; }
 
-  /* Weather-satellite next-pass / capture notice */
-  .wxsat-row {
-    display: flex; align-items: center; gap: .7rem;
-    background: var(--bg-raise); border: 1px solid var(--line);
-    border-radius: 10px; padding: .55rem .8rem;
-    font-size: .76rem; color: var(--text-dim); line-height: 1.35;
-  }
-  .wxsat-row.armed      { border-color: var(--amber-dim); }
-  .wxsat-row.authorized { border-color: var(--amber); background: rgba(255,174,58,.06); }
-  .wxsat-row.capturing  { border-color: var(--amber); color: var(--amber); }
-  .wxsat-icon { font-size: 1rem; flex: none; }
-  .wxsat-text { flex: 1 1 auto; min-width: 0; }
-  .wxsat-text b { color: var(--text); }
-  .wxsat-text .cd { color: var(--amber); font-family: 'Courier New', monospace; font-weight: 700; }
-  .wxsat-btn {
-    flex: none; font-size: .72rem; padding: .4rem .7rem; border-radius: 7px;
-    background: var(--bg-button); color: var(--text); border: 1px solid var(--line); cursor: pointer;
-  }
-  .wxsat-btn:hover { background: var(--bg-button-hover); }
-  .wxsat-btn.on { border-color: var(--amber); color: var(--amber); }
-
   .footer {
     margin-top: .5rem;
     text-align: center;
@@ -562,13 +541,6 @@
       <button class="btn qual-ch" data-br="192k">192k</button>
       <button class="btn qual-ch" data-br="256k">256k</button>
     </div>
-  </div>
-
-  <!-- Weather-satellite next-pass notice + listener authorization -->
-  <div class="wxsat-row" id="wxsat-row" style="display:none">
-    <span class="wxsat-icon">🛰</span>
-    <span class="wxsat-text" id="wxsat-text">—</span>
-    <button class="wxsat-btn" id="wxsat-btn" style="display:none"></button>
   </div>
 
   <div class="footer">
@@ -1287,74 +1259,6 @@ async function pollStations() {
 }
 
 // ---------------------------------------------------------------------------
-// Weather-satellite next-pass notice + listener authorization
-// ---------------------------------------------------------------------------
-let wxNext = null, wxAuthorizedAos = null, wxDryRun = false, wxTuner = null, wxCapturing = null;
-
-function wxIsAuthorized() {
-  return wxNext && wxAuthorizedAos && Math.abs(wxAuthorizedAos - wxNext.aos_unix) <= 120;
-}
-function fmtCountdown(s) {
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
-  return (h > 0 ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(ss).padStart(2, '0');
-}
-
-async function pollWxsat() {
-  try {
-    const s = await (await fetch('/api/wxsat/status')).json();
-    wxNext = s.next_pass; wxAuthorizedAos = s.authorized_aos;
-    wxDryRun = !!s.dry_run; wxTuner = s.tuner; wxCapturing = s.capturing_pass;
-    renderWxsat();
-  } catch (e) {}
-}
-
-function renderWxsat() {
-  const row = $('wxsat-row'), btn = $('wxsat-btn');
-  // A capture is happening right now (stream is paused).
-  if (wxTuner === 'capturing' && wxCapturing) {
-    row.style.display = ''; row.className = 'wxsat-row capturing';
-    btn.style.display = 'none';
-    $('wxsat-text').innerHTML =
-      `<b>${wxCapturing.satellite} capture in progress</b> — the radio is paused (~${Math.round(wxCapturing.duration_min || 0)} min) and resumes automatically.`;
-    return;
-  }
-  // Otherwise show the next *real* scheduled interruption (none in dry-run).
-  if (!wxNext || wxDryRun) { row.style.display = 'none'; return; }
-  row.style.display = '';
-  row.className = 'wxsat-row ' + (wxIsAuthorized() ? 'authorized' : 'armed');
-  btn.style.display = '';
-  btn.textContent = wxIsAuthorized() ? 'Cancel' : 'Allow this pass';
-  btn.classList.toggle('on', !wxIsAuthorized());
-  tickWxsat();
-}
-
-function tickWxsat() {
-  if (wxTuner === 'capturing' || !wxNext || wxDryRun) return;
-  const secs = Math.max(0, wxNext.aos_unix - Math.floor(Date.now() / 1000));
-  const when = new Date(wxNext.aos_unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const sat = wxNext.satellite, elev = Math.round(wxNext.max_elev || 0), dur = Math.round(wxNext.duration_min || 0);
-  $('wxsat-text').innerHTML = wxIsAuthorized()
-    ? `✓ <b>${sat}</b> pass authorized — radio pauses at <b>${when}</b> (~${dur} min), in <span class="cd">${fmtCountdown(secs)}</span>`
-    : `Next satellite pass: <b>${sat}</b> at ${when} (max ${elev}°), in <span class="cd">${fmtCountdown(secs)}</span>. Radio pauses ~${dur} min for it <b>unless you're listening</b> (then it's skipped).`;
-}
-
-async function authorizeWxsat() {
-  if (!wxNext) return;
-  const cancel = wxIsAuthorized();
-  const body = cancel ? { cancel: true } : { aos_unix: wxNext.aos_unix };
-  try {
-    const r = await (await fetch('/api/wxsat/authorize', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    })).json();
-    if (r.ok) {
-      wxAuthorizedAos = r.authorized_aos;
-      renderWxsat();
-      showToast(cancel ? 'Pass authorization cancelled' : 'Pass authorized — the radio will pause for the capture');
-    } else { showToast('Could not update authorization'); }
-  } catch (e) { showToast('Could not update authorization'); }
-}
-
-// ---------------------------------------------------------------------------
 // Butterchurn visualizer (renders entirely in this browser — zero Pi load).
 //
 // Audio graph: <audio> → MediaElementSource → destination (always, once the
@@ -1997,14 +1901,10 @@ if (vizAvailable) {
   applyVizBandPref();
 }
 applyDuckBandPref();   // visual state only — the tap builds on play/toggle
-$('wxsat-btn').addEventListener('click', authorizeWxsat);
 pollStations();
 pollNowPlaying();
-pollWxsat();
 setInterval(pollNowPlaying, 1000);
 setInterval(pollStations, 30000);
-setInterval(pollWxsat, 15000);   // next-pass status / authorization
-setInterval(tickWxsat, 1000);    // live countdown
 </script>
 </body>
 </html>

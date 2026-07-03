@@ -34,7 +34,6 @@ WXSAT_DIR          = Path("/var/lib/sdr-streams/wxsat")
 WXSAT_CAPTURES_PATH = WXSAT_DIR / "captures.json"
 WXSAT_PASSES_PATH   = Path("/run/sdr-streams/wxsat_passes.json")
 WXSAT_STATUS_PATH   = Path("/run/sdr-streams/wxsat_status.json")
-WXSAT_AUTH_PATH     = Path("/run/sdr-streams/wxsat_authorized.json")
 WXSAT_LIVE_PATH     = Path("/run/sdr-streams/wxsat_live.json")
 # wxsat is radio-domain but inherently Pi-side: the scheduler needs the SDR, so
 # the capture products + captures.json only ever exist on the Pi. The rack tuner
@@ -1284,67 +1283,28 @@ def api_wxsat_passes():
     return jsonify(data)
 
 
-def _wxsat_human_listeners():
-    """(count, ok) human listeners on the fm.mp3 mount, discounting the caption
-    orchestrator (itself an Icecast consumer). ok=False if the query failed."""
-    try:
-        r = requests.get("http://localhost:8000/status-json.xsl", timeout=4)
-        r.raise_for_status()
-        src = r.json().get("icestats", {}).get("source")
-        raw = 0
-        if src is not None:
-            for s in (src if isinstance(src, list) else [src]):
-                url = str(s.get("listenurl", ""))
-                if url.endswith("/fm.mp3") or url.endswith("fm.mp3"):
-                    try:
-                        raw = int(s.get("listeners", 0) or 0)
-                    except (TypeError, ValueError):
-                        raw = 0
-                    break
-        internal = 1 if is_active("sdr-captions") == "active" else 0
-        return max(0, raw - internal), True
-    except (requests.RequestException, ValueError) as e:
-        app.logger.warning("wxsat listener check failed: %s", e)
-        return 0, False
-
-
 @app.route("/api/wxsat/status")
 def api_wxsat_status():
-    """Current tuner status + next scheduled pass + authorization + live listener
-    count, for the /wxsat indicator and the /radio next-interruption notice."""
+    """Scheduler state + next pass, for the /wxsat indicator. The Meteor dongle
+    is DEDICATED (goes.srvr) — nothing here touches or reflects the FM radio.
+    The status file (mirrored from the Pi by the platform's live relay) carries
+    phase="decoding" while the rack SatDump runs."""
     st       = _load_json(WXSAT_STATUS_PATH) or {}
     passes   = (_load_json(WXSAT_PASSES_PATH) or {}).get("passes", [])
-    auth     = _load_json(WXSAT_AUTH_PATH) or {}
     sched    = st.get("state")                       # scheduled | capturing | idle
-    streaming = is_active(SERVICE) == "active"
     next_pass = st.get("next_pass") or (passes[0] if passes else None)
 
-    # The capture script restarts the stream BEFORE the (offline) decode, so a
-    # "capturing" scheduler state with the stream back up means we're decoding.
     if sched == "capturing":
-        tuner = "capturing" if not streaming else "decoding"
-    elif streaming:
-        tuner = "streaming"
+        tuner = "decoding" if st.get("phase") == "decoding" else "capturing"
     else:
         tuner = "idle"
 
-    authorized_aos = auth.get("aos_unix")
-    next_authorized = bool(
-        authorized_aos and next_pass
-        and abs(int(authorized_aos) - int(next_pass.get("aos_unix", 0))) <= 120)
-    listeners, listeners_ok = _wxsat_human_listeners()
-
     return jsonify({
-        "tuner":           tuner,           # streaming | capturing | decoding | idle
-        "stream_active":   streaming,
+        "tuner":           tuner,           # capturing | decoding | idle
         "state":           sched,
         "dry_run":         st.get("dry_run", False),
         "next_pass":       next_pass,
         "capturing_pass":  st.get("capturing_pass"),
-        "authorized_aos":  authorized_aos,
-        "next_authorized": next_authorized,
-        "listeners":       listeners,
-        "listeners_ok":    listeners_ok,
     })
 
 
@@ -1398,37 +1358,6 @@ def api_wxsat_rebuild():
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
     return jsonify({"ok": True, "started": True})
-
-
-@app.route("/api/wxsat/authorize", methods=["POST"])
-def api_wxsat_authorize():
-    """Listener pre-approval: capture the given pass even if someone's listening.
-    A control action like /api/tune (not a public read). Body: {aos_unix} to set,
-    {cancel:true} to clear."""
-    payload = request.get_json(silent=True) or {}
-    if payload.get("cancel"):
-        try:
-            WXSAT_AUTH_PATH.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            return jsonify({"ok": False, "error": str(e)}), 500
-        return jsonify({"ok": True, "authorized_aos": None})
-    try:
-        aos = int(payload.get("aos_unix"))
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "missing/invalid aos_unix"}), 400
-    now = time.time()
-    if aos < now - 300 or aos > now + 7 * 86400:
-        return jsonify({"ok": False, "error": "aos_unix out of range"}), 400
-    try:
-        WXSAT_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = WXSAT_AUTH_PATH.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"aos_unix": aos, "at": int(now)}))
-        os.replace(tmp, WXSAT_AUTH_PATH)
-    except OSError as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-    return jsonify({"ok": True, "authorized_aos": aos})
 
 
 @app.route("/api/wxsat/space")

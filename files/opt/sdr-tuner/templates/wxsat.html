@@ -103,7 +103,6 @@
                 font-size: .75rem; color: var(--text-dim); border: 1px solid var(--line);
                 background: var(--bg-panel); border-radius: 999px; padding: .35rem .8rem; }
   .tuner-pill .dot { width: 9px; height: 9px; border-radius: 50%; background: #444; flex: none; }
-  .tuner-pill.streaming .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
   .tuner-pill.decoding  .dot { background: var(--blue);  box-shadow: 0 0 8px var(--blue); }
   .tuner-pill.capturing { color: var(--amber); border-color: var(--amber-dim); }
   .tuner-pill.capturing .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber);
@@ -166,14 +165,12 @@
   </header>
 
   <div class="status-bar">
-    <div class="tuner-pill" id="tunerPill"><span class="dot"></span><span id="tunerText">Tuner: …</span></div>
-    <span class="chip" id="listenChip">👤 …</span>
-    <span class="chip auth" id="authChip" style="display:none">✓ next pass authorized</span>
+    <div class="tuner-pill" id="tunerPill"><span class="dot"></span><span id="tunerText">…</span></div>
   </div>
 
   <div id="dryban" class="dryban" style="display:none">
-    Dry-run mode — the scheduler is logging capture/skip decisions but not yet
-    touching the SDR. The radio stream is never interrupted.
+    Dry-run mode — the scheduler is logging capture decisions but not yet
+    touching the SDR.
   </div>
 
   <section class="panel live-panel" id="livePanel" style="display:none">
@@ -265,33 +262,38 @@ const OUTCOME_LABEL = {
   would_capture: "Would capture", would_skip: "Would skip",
 };
 
+let nextPass = null;      // for the idle countdown ticker
+
+function renderIdlePill() {
+  const txt = $('tunerText');
+  if (!nextPass || !nextPass.aos_unix) { txt.innerHTML = '<b>Idle</b> — no pass scheduled'; return; }
+  const secs = Math.max(0, Math.round(nextPass.aos_unix - Date.now() / 1000));
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+  const cd = h > 0 ? `${h}h ${String(m).padStart(2,'0')}m` : m > 0 ? `${m}m ${String(s).padStart(2,'0')}s` : `${s}s`;
+  const el = (nextPass.max_elev == null) ? '' : ` (${Math.round(nextPass.max_elev)}°)`;
+  txt.innerHTML = `<b>Idle</b> — next pass: <b>${escapeHTML(nextPass.satellite || '')}</b> in ${cd}${el}`;
+}
+
 async function refreshStatus() {
   try {
     const s = await (await fetch('/api/wxsat/status')).json();
     const pill = $('tunerPill'), txt = $('tunerText');
-    pill.className = 'tuner-pill ' + (s.tuner || 'idle');
+    const state = (s.tuner === 'capturing' || s.tuner === 'decoding') ? s.tuner : 'idle';
+    pill.className = 'tuner-pill ' + state;
     const sat = (s.capturing_pass && s.capturing_pass.satellite) || '';
-    if (s.tuner === 'capturing')      txt.innerHTML = `Tuner: <b>capturing ${escapeHTML(sat)}</b> — stream paused`;
-    else if (s.tuner === 'decoding')  txt.innerHTML = `Tuner: <b>decoding ${escapeHTML(sat)}</b> — stream back up`;
-    else if (s.tuner === 'streaming') txt.innerHTML = 'Tuner: <b>streaming</b> the radio';
-    else                              txt.innerHTML = 'Tuner: <b>idle</b>';
+    nextPass = s.next_pass || null;
+    if (s.tuner === 'capturing')      txt.innerHTML = `<b>Capturing ${escapeHTML(sat)}</b> — recording on goes.srvr`;
+    else if (s.tuner === 'decoding')  txt.innerHTML = `<b>Decoding ${escapeHTML(sat)}</b> — SatDump on the rack`;
+    else                              renderIdlePill();
 
     // Drive the live-pass panel only while a capture/decode is in progress.
     const wasActive = liveActive;
     liveActive = (s.tuner === 'capturing' || s.tuner === 'decoding');
     if (liveActive && !wasActive) refreshLive();   // show promptly on transition
     else if (!liveActive && wasActive) showLive(false);
-
-    // Radio consumers (human listeners on the stream).
-    const lc = $('listenChip');
-    if (!s.listeners_ok) { lc.className = 'chip'; lc.innerHTML = '👤 listeners: —'; }
-    else if (s.listeners > 0) { lc.className = 'chip live'; lc.innerHTML = `👤 <b>${s.listeners}</b> listening`; }
-    else { lc.className = 'chip'; lc.innerHTML = '👤 no listeners'; }
-
-    // Next pass authorized to capture despite listeners?
-    $('authChip').style.display = s.next_authorized ? '' : 'none';
   } catch (e) { /* leave last */ }
 }
+setInterval(() => { if (!liveActive) renderIdlePill(); }, 1000);
 
 async function refreshSpace() {
   try {
