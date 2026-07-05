@@ -291,6 +291,15 @@ function renderIdlePill() {
   txt.innerHTML = `<b>Idle</b> — next pass: <b>${escapeHTML(nextPass.satellite || '')}</b> in ${cd}${el}`;
 }
 
+// "Jul 4, 1:33 PM · 11° max" for a pass carrying aos_unix/max_elev — which
+// pass is being worked on, not just that something is. '' when unknown.
+function passWhen(p) {
+  if (!p || !p.aos_unix) return '';
+  const t = new Date(p.aos_unix * 1000).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+  const el = (p.max_elev == null) ? '' : ` · ${Math.round(p.max_elev)}° max`;
+  return ` (${t}${el})`;
+}
+
 async function refreshStatus() {
   try {
     const s = await (await fetch('/api/wxsat/status')).json();
@@ -298,9 +307,10 @@ async function refreshStatus() {
     const state = (s.tuner === 'capturing' || s.tuner === 'decoding') ? s.tuner : 'idle';
     pill.className = 'tuner-pill ' + state;
     const sat = (s.capturing_pass && s.capturing_pass.satellite) || '';
+    const when = escapeHTML(passWhen(s.capturing_pass));
     nextPass = s.next_pass || null;
-    if (s.tuner === 'capturing')      txt.innerHTML = `<b>Capturing ${escapeHTML(sat)}</b> — recording on goes.srvr`;
-    else if (s.tuner === 'decoding')  txt.innerHTML = `<b>Decoding ${escapeHTML(sat)}</b> — SatDump on the rack`;
+    if (s.tuner === 'capturing')      txt.innerHTML = `<b>Capturing ${escapeHTML(sat)}</b>${when} — recording on goes.srvr`;
+    else if (s.tuner === 'decoding')  txt.innerHTML = `<b>Decoding ${escapeHTML(sat)}</b>${when} — SatDump on the rack`;
     else                              renderIdlePill();
 
     // Drive the live-pass panel only while a capture/decode is in progress.
@@ -549,7 +559,8 @@ async function refreshLive() {
 
   if (d.phase === 'decoding') {
     document.getElementById('liveTitle').textContent = 'Decoding ' + (d.satellite || '');
-    document.getElementById('liveSub').textContent = 'offline decode — stream back up';
+    document.getElementById('liveSub').textContent =
+      'offline decode' + (passWhen(d) || ' — stream back up');
     document.getElementById('decodeRow').style.display = '';
     const vit = document.getElementById('decViterbi'), def = document.getElementById('decDeframer');
     vit.textContent = 'Viterbi ' + (d.viterbi || '—');
