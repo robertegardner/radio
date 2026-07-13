@@ -225,6 +225,11 @@
     <h2>Past captures</h2>
     <div id="capturesWrap"><div class="empty">Loading…</div></div>
   </section>
+
+  <section class="panel">
+    <h2>Downtime survey <span class="live-sub" id="dtSub"></span></h2>
+    <div id="downtimeWrap"><div class="empty">Loading…</div></div>
+  </section>
 </div>
 
 <div class="modal" id="prodModal" style="display:none">
@@ -646,7 +651,52 @@ async function openPassView(id) {
 }
 function closePassView() { $('passModal').style.display = 'none'; }
 
-function refreshAll() { refreshStatus(); refreshSpace(); refreshPasses(); refreshCaptures(); }
+// Downtime survey — what the Meteor antenna/LNA hears BETWEEN passes
+// (wxsat-downtime.service on the GOES Pi: ORBCOMM Doppler tracks, RFI
+// carriers, chain-health floor). Data via /api/wxsat/downtime.
+const DT_CLASS = { doppler: 'sat pass (Doppler)', carrier: 'fixed carrier', burst: 'burst' };
+async function refreshDowntime() {
+  try {
+    const d = await (await fetch('/api/wxsat/downtime')).json();
+    if (!d || !d.latest) {
+      $('downtimeWrap').innerHTML = '<div class="empty">No downtime survey data yet.</div>';
+      $('dtSub').textContent = '';
+      return;
+    }
+    const L = d.latest;
+    $('dtSub').textContent =
+      `last sweep ${fmtLocal(L.ts)} · floor ${L.floor_db} dB · clip ${L.clip_pct}%` +
+      (d.stale ? ' · STALE (Pi unreachable)' : '');
+    const sigs = (d.signals || []).slice(0, 30);
+    if (!sigs.length) {
+      $('downtimeWrap').innerHTML =
+        '<div class="empty">Nothing above threshold in recent sweeps (137 MHz band quiet).</div>';
+      return;
+    }
+    const rows = sigs.map(s => {
+      const hi = (s.class === 'doppler') ? ' hi' : '';
+      const dop = (s.doppler_hz_s == null) ? '—'
+                : (s.doppler_hz_s > 0 ? '+' : '') + s.doppler_hz_s + ' Hz/s';
+      return `<tr>
+        <td class="mono">${fmtLocal(s.ts)}</td>
+        <td><span class="elev-pill${hi}">${escapeHTML(DT_CLASS[s.class] || s.class)}</span></td>
+        <td>${escapeHTML(s.band || '')}</td>
+        <td class="mono">${s.freq_mhz}</td>
+        <td class="mono">${s.snr_db} dB</td>
+        <td class="mono">${s.bw_khz} k</td>
+        <td class="mono">${dop}</td>
+        <td class="mono">${s.seen_s}s</td>
+      </tr>`;
+    }).join('');
+    $('downtimeWrap').innerHTML =
+      `<table><thead><tr><th>Heard (local)</th><th>Type</th><th>Band</th><th>MHz</th>` +
+      `<th>SNR</th><th>BW</th><th>Doppler</th><th>Seen</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    $('downtimeWrap').innerHTML = '<div class="empty">Could not load the downtime survey.</div>';
+  }
+}
+
+function refreshAll() { refreshStatus(); refreshSpace(); refreshPasses(); refreshCaptures(); refreshDowntime(); }
 refreshAll();
 setInterval(refreshAll, 30000);
 setInterval(refreshStatus, 10000);   // tuner status reacts faster than the gallery

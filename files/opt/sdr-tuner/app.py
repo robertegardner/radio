@@ -1307,6 +1307,34 @@ def api_wxsat_passes():
     return jsonify(data)
 
 
+# Downtime-survey feed: wxsat-downtime.service on the GOES Pi surveys the
+# 137 MHz chain between Meteor passes (ORBCOMM Doppler tracks, RFI carriers,
+# Sawbird floor trend) and writes downtime.json next to the capture store,
+# served by the Pi's static :8078. Proxied here so the HTTPS /wxsat page has
+# a same-origin source; the 30 s cache keeps page polls off the Garage-UDB
+# wireless bridge.
+WXSAT_DOWNTIME_URL = os.environ.get("WXSAT_DOWNTIME_URL",
+                                    "http://goes.srvr:8078/downtime.json")
+_downtime_cache = {"t": 0.0, "doc": None}
+
+
+@app.route("/api/wxsat/downtime")
+def api_wxsat_downtime():
+    now = time.time()
+    if _downtime_cache["doc"] is not None and now - _downtime_cache["t"] < 30:
+        return jsonify(_downtime_cache["doc"])
+    try:
+        r = requests.get(WXSAT_DOWNTIME_URL, timeout=8)
+        r.raise_for_status()
+        doc = r.json()
+    except (requests.RequestException, ValueError) as e:
+        if _downtime_cache["doc"] is not None:
+            return jsonify({**_downtime_cache["doc"], "stale": True})
+        return jsonify({"ok": False, "error": f"downtime feed unreachable: {e}"}), 502
+    _downtime_cache.update(t=now, doc=doc)
+    return jsonify(doc)
+
+
 @app.route("/api/wxsat/status")
 def api_wxsat_status():
     """Scheduler state + next pass, for the /wxsat indicator. The Meteor dongle
