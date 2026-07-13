@@ -230,6 +230,11 @@
     <h2>Downtime survey <span class="live-sub" id="dtSub"></span></h2>
     <div id="downtimeWrap"><div class="empty">Loading…</div></div>
   </section>
+
+  <section class="panel">
+    <h2>ORBCOMM decodes <span class="live-sub" id="ocSub"></span></h2>
+    <div id="orbcommWrap"><div class="empty">Loading…</div></div>
+  </section>
 </div>
 
 <div class="modal" id="prodModal" style="display:none">
@@ -696,7 +701,50 @@ async function refreshDowntime() {
   }
 }
 
-function refreshAll() { refreshStatus(); refreshSpace(); refreshPasses(); refreshCaptures(); refreshDowntime(); }
+// ORBCOMM STX decodes — wxsat-orbcomm.service records OG2 passes near TCA and
+// sweep-decodes the channel plan; nonzero framed STX = a live LEO datalink.
+// Data via /api/wxsat/orbcomm.
+async function refreshOrbcomm() {
+  try {
+    const d = await (await fetch('/api/wxsat/orbcomm')).json();
+    const lp = d && d.last_pass;
+    if (!lp || !lp.frames_bytes) {
+      const np = d && d.next_passes && d.next_passes[0];
+      $('orbcommWrap').innerHTML = np
+        ? `<div class="empty">No decode yet — next OG2 pass <b>${escapeHTML(np.sat)}</b> at ${fmtLocal(Date.parse(np.aos_iso)/1000)} (${np.max_elev}°).</div>`
+        : '<div class="empty">No ORBCOMM decode data yet.</div>';
+      $('ocSub').textContent = '';
+      return;
+    }
+    $('ocSub').textContent = `last decode ${fmtLocal(lp.ts)}` + (d.stale ? ' · STALE (Pi unreachable)' : '');
+    const pct = lp.packets ? Math.round(100 * lp.data_packets / lp.packets) : 0;
+    const types = (lp.top_types || []).map(t =>
+      `<span class="elev-pill${t[0] === '0x1e' ? '' : ' hi'}">${t[0]}×${t[1]}</span>`).join(' ');
+    let html =
+      `<div style="padding:6px 0;line-height:1.7">
+         <div style="font-size:15px"><b>${escapeHTML(lp.sat)}</b> · ${lp.channel_mhz} MHz · ${lp.max_elev}° · ${lp.record_s}s window</div>
+         <div class="mono">${lp.packets} packets · ${lp.data_packets} data (${pct}%) · ${lp.fill_pct}% fill · ${(lp.frames_bytes / 1024).toFixed(1)} KB framed STX</div>
+         <div style="margin-top:4px">${types}</div>
+       </div>`;
+    const rec = (d.recent || []).slice(0, 12);
+    if (rec.length) {
+      const rows = rec.map(r => `<tr>
+          <td class="mono">${fmtLocal(r.ts)}</td>
+          <td>${escapeHTML(r.sat)}</td>
+          <td class="mono">${r.channel_mhz} MHz</td>
+          <td class="mono">${r.packets}</td>
+          <td class="mono">${r.fill_pct}%</td>
+          <td class="mono">${(r.frames_bytes / 1024).toFixed(1)} KB</td>
+        </tr>`).join('');
+      html += `<table><thead><tr><th>Decoded (local)</th><th>Satellite</th><th>Channel</th><th>Packets</th><th>Fill</th><th>Frames</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+    $('orbcommWrap').innerHTML = html;
+  } catch (e) {
+    $('orbcommWrap').innerHTML = '<div class="empty">Could not load ORBCOMM decodes.</div>';
+  }
+}
+
+function refreshAll() { refreshStatus(); refreshSpace(); refreshPasses(); refreshCaptures(); refreshDowntime(); refreshOrbcomm(); }
 refreshAll();
 setInterval(refreshAll, 30000);
 setInterval(refreshStatus, 10000);   // tuner status reacts faster than the gallery

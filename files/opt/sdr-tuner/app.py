@@ -1335,6 +1335,33 @@ def api_wxsat_downtime():
     return jsonify(doc)
 
 
+# ORBCOMM decode feed: wxsat-orbcomm.service on the GOES Pi records OG2 passes
+# near TCA (rtl_tcp client, gated like the survey), sweep-decodes the channel
+# plan with `satdump orbcomm_stx`, and writes orbcomm.json to the Pi's static
+# :8078. Proxied here (30 s cache) so the HTTPS /wxsat page has a same-origin
+# source.
+WXSAT_ORBCOMM_URL = os.environ.get("WXSAT_ORBCOMM_URL",
+                                   "http://goes.srvr:8078/orbcomm.json")
+_orbcomm_cache = {"t": 0.0, "doc": None}
+
+
+@app.route("/api/wxsat/orbcomm")
+def api_wxsat_orbcomm():
+    now = time.time()
+    if _orbcomm_cache["doc"] is not None and now - _orbcomm_cache["t"] < 30:
+        return jsonify(_orbcomm_cache["doc"])
+    try:
+        r = requests.get(WXSAT_ORBCOMM_URL, timeout=8)
+        r.raise_for_status()
+        doc = r.json()
+    except (requests.RequestException, ValueError) as e:
+        if _orbcomm_cache["doc"] is not None:
+            return jsonify({**_orbcomm_cache["doc"], "stale": True})
+        return jsonify({"ok": False, "error": f"orbcomm feed unreachable: {e}"}), 502
+    _orbcomm_cache.update(t=now, doc=doc)
+    return jsonify(doc)
+
+
 @app.route("/api/wxsat/status")
 def api_wxsat_status():
     """Scheduler state + next pass, for the /wxsat indicator. The Meteor dongle
