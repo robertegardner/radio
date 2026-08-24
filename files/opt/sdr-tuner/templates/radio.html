@@ -2032,22 +2032,26 @@ function dbgVerdict() {
   if (!h || !h.ok) { el.textContent = 'Waiting for platform data…'; return; }
   const fm = h.fm || {}, ev = fm.events || {};
   const bursts = ev.overflow_bursts || 0;
-  const srvGlitch = (ev.burst_ts || []).concat(ev.restarts || []).map(t => t + dbgClockOfs);
-  const restartRecent = (ev.restarts || []).length > 0 || (fm.uptime_sec != null && fm.uptime_sec < DBG_WIN);
-  const corr = stalls.filter(s => srvGlitch.some(g => Math.abs(s.t - g) < 25)).length;
+  // Rebuffers mean the BYTE flow stopped — only restarts / a dead mount do
+  // that. IQ overflows never starve the player (the encoder keeps emitting);
+  // they are audible as clicks/garble and get their own line below.
+  const restartRecent = (ev.restarts || []).length > 0
+    || (fm.uptime_sec != null && fm.uptime_sec < DBG_WIN)
+    || (h.icecast && h.icecast.ok && h.icecast.mount_uptime_sec != null && h.icecast.mount_uptime_sec < DBG_WIN);
+  const clickNote = bursts
+    ? ' Separately, the platform DSP is dropping samples (' + bursts + ' bursts/10 min → clicks/garble).' : '';
 
   if (h.icecast && h.icecast.ok === false) {
     el.classList.add('bad');
     el.textContent = '📡 Platform: the /fm.mp3 mount is missing from Icecast — the FM source is down, nothing you hear is your wifi.';
-  } else if (stalls.length && (corr || restartRecent)) {
+  } else if (stalls.length && restartRecent) {
     el.classList.add('bad');
-    el.textContent = '📡 Platform: ' + (corr || stalls.length) + ' of your ' + stalls.length +
-      ' rebuffers line up with server-side glitches (' +
-      (restartRecent ? 'FM stream restarted ' + dbgFmtDur(fm.uptime_sec) + ' ago' : bursts + ' overflow bursts') + ').';
+    el.textContent = '📡 Platform: the FM stream restarted ' + dbgFmtDur(fm.uptime_sec) +
+      ' ago — your ' + stalls.length + ' rebuffer(s) are consistent with that, not your wifi.' + clickNote;
   } else if (stalls.length) {
     el.classList.add('warn');
     el.textContent = '📶 Your connection: the player rebuffered ' + stalls.length +
-      '× in 10 min while the platform stream ran continuously — wifi/network on your end.';
+      '× in 10 min while the platform stream ran continuously — wifi/network on your end.' + clickNote;
   } else if (bursts) {
     el.classList.add('warn');
     el.textContent = '⚠️ Platform DSP is dropping samples (' + bursts +
