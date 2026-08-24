@@ -182,6 +182,39 @@
     text-transform: uppercase; letter-spacing: .15em;
     margin-bottom: .4rem; padding-left: .25rem;
   }
+  /* 🩺 stream-debug panel */
+  .dbg {
+    margin-top: 1rem; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg-panel); font-size: .8rem;
+  }
+  .dbg summary {
+    cursor: pointer; padding: .55rem .8rem; color: var(--text-dim);
+    font-size: .7rem; text-transform: uppercase; letter-spacing: .12em;
+    user-select: none;
+  }
+  .dbg[open] summary { border-bottom: 1px solid var(--line); }
+  .dbg-verdict {
+    padding: .6rem .8rem; color: var(--text); line-height: 1.4;
+    border-bottom: 1px solid var(--line);
+  }
+  .dbg-verdict.good { color: var(--green); }
+  .dbg-verdict.warn { color: var(--amber); }
+  .dbg-verdict.bad  { color: var(--red); }
+  .dbg-cols { display: flex; gap: 1rem; padding: .7rem .8rem; flex-wrap: wrap; }
+  .dbg-col  { flex: 1 1 14rem; min-width: 13rem; }
+  .dbg-kv {
+    display: flex; justify-content: space-between; gap: .8rem;
+    padding: .15rem 0; color: var(--text-dim);
+  }
+  .dbg-kv b { color: var(--text); font-weight: 500; text-align: right; }
+  .dbg-kv b.err { color: var(--red); }
+  .dbg-kv b.ok  { color: var(--green); }
+  .dbg-spark { font-family: monospace; letter-spacing: .05em; color: var(--amber); }
+  .dbg-log {
+    padding: .4rem .8rem .7rem; color: var(--text-faint);
+    font-family: monospace; font-size: .7rem; line-height: 1.5;
+    max-height: 7rem; overflow-y: auto;
+  }
   .presets {
     display: grid; grid-template-columns: repeat(6, 1fr); gap: .5rem;
   }
@@ -542,6 +575,31 @@
       <button class="btn qual-ch" data-br="256k">256k</button>
     </div>
   </div>
+
+  <!-- 🩺 Stream debug: pinpoint dropouts — listener wifi vs platform -->
+  <details class="dbg" id="dbg-panel">
+    <summary>🩺 Stream debug — is it my wifi or the platform?</summary>
+    <div class="dbg-verdict" id="dbg-verdict">Listening data collects while you play. Open this panel to compare against the platform.</div>
+    <div class="dbg-cols">
+      <div class="dbg-col">
+        <div class="presets-label">Your connection</div>
+        <div class="dbg-kv"><span>Rebuffers (10 min)</span><b id="dbg-c-stalls">–</b></div>
+        <div class="dbg-kv"><span>Player buffer</span><b id="dbg-c-buf">–</b></div>
+        <div class="dbg-kv"><span>Reconnects (10 min)</span><b id="dbg-c-reconn">–</b></div>
+        <div class="dbg-kv"><span>Last event</span><b id="dbg-c-last">–</b></div>
+      </div>
+      <div class="dbg-col">
+        <div class="presets-label">Platform</div>
+        <div class="dbg-kv"><span>FM stream uptime</span><b id="dbg-s-uptime">–</b></div>
+        <div class="dbg-kv"><span>Restarts (24 h)</span><b id="dbg-s-restarts">–</b></div>
+        <div class="dbg-kv"><span>IQ overflows (10 min)</span><b id="dbg-s-ovf">–</b></div>
+        <div class="dbg-kv"><span>Overflow trend</span><b id="dbg-s-spark" class="dbg-spark">–</b></div>
+        <div class="dbg-kv"><span>Icecast mount</span><b id="dbg-s-mount">–</b></div>
+        <div class="dbg-kv"><span>Pi SDR source</span><b id="dbg-s-src">–</b></div>
+      </div>
+    </div>
+    <div class="dbg-log" id="dbg-log"></div>
+  </details>
 
   <div class="footer">
     <a href="/">admin</a> · <a href="/wxsat">weather satellites</a>
@@ -1905,6 +1963,168 @@ pollStations();
 pollNowPlaying();
 setInterval(pollNowPlaying, 1000);
 setInterval(pollStations, 30000);
+
+// ---------------------------------------------------------------------------
+// 🩺 Stream debug — pinpoint dropouts: listener wifi vs platform.
+//
+// Client half: passively record player rebuffer/error/reconnect events off the
+// SAME <audio> events the reconnect loop uses (recording only — never touches
+// playback). Server half: /api/stream-health (FM uptime + IQ-overflow bursts +
+// Icecast mount + Pi source probe). The verdict correlates the two: rebuffers
+// that line up with server glitches = platform; rebuffers while the server ran
+// clean = your wifi; overflows with no rebuffers = platform DSP clicks.
+// ---------------------------------------------------------------------------
+const DBG_WIN = 600;                     // correlation window, seconds
+const dbgEvents = [];                    // {t (client epoch s), type, detail}
+let dbgHealth = null;                    // last /api/stream-health response
+let dbgClockOfs = 0;                     // client_now - server_ts at fetch
+let dbgStallOpen = false;                // dedupe: one event per stall episode
+let dbgTimer = null;
+let dbgSeenFirstConnect = false;
+
+function dbgRecord(type, detail) {
+  const t = Date.now() / 1000;
+  dbgEvents.push({t, type, detail: detail || ''});
+  while (dbgEvents.length > 60 || (dbgEvents.length && t - dbgEvents[0].t > DBG_WIN * 1.5))
+    dbgEvents.shift();
+  if ($('dbg-panel').open) renderDbg();
+}
+
+['stalled', 'waiting'].forEach(ev => audio.addEventListener(ev, () => {
+  if (!isPlaying || dbgStallOpen) return;
+  dbgStallOpen = true;
+  dbgRecord('stall', ev);
+}));
+audio.addEventListener('error', () => { if (isPlaying) dbgRecord('error', 'audio element error'); });
+audio.addEventListener('playing', () => {
+  if (dbgStallOpen) {
+    dbgStallOpen = false;
+    const last = dbgEvents.filter(e => e.type === 'stall').pop();
+    if (last) dbgRecord('recovered', 'gap ' + (Date.now() / 1000 - last.t).toFixed(1) + 's');
+  }
+});
+// Each openStream() sets a new src → 'loadstart'. First one is the user's play.
+audio.addEventListener('loadstart', () => {
+  if (!dbgSeenFirstConnect) { dbgSeenFirstConnect = true; return; }
+  if (isPlaying) dbgRecord('reconnect', '');
+});
+
+function dbgFmtDur(s) {
+  if (s == null) return '–';
+  if (s < 90) return Math.round(s) + 's';
+  if (s < 5400) return Math.round(s / 60) + 'm';
+  return (s / 3600).toFixed(1) + 'h';
+}
+
+function dbgSpark(perMin) {
+  const bars = '▁▂▃▄▅▆▇█';
+  const seq = perMin.slice().reverse();          // oldest → newest
+  const max = Math.max.apply(null, seq.concat([1]));
+  return seq.map(v => v ? bars[Math.min(7, Math.ceil(v / max * 7))] : '·').join('');
+}
+
+function dbgVerdict() {
+  const el = $('dbg-verdict');
+  const now = Date.now() / 1000;
+  const stalls = dbgEvents.filter(e => now - e.t < DBG_WIN && (e.type === 'stall' || e.type === 'error'));
+  const h = dbgHealth;
+  el.className = 'dbg-verdict';
+  if (!h || !h.ok) { el.textContent = 'Waiting for platform data…'; return; }
+  const fm = h.fm || {}, ev = fm.events || {};
+  const bursts = ev.overflow_bursts || 0;
+  const srvGlitch = (ev.burst_ts || []).concat(ev.restarts || []).map(t => t + dbgClockOfs);
+  const restartRecent = (ev.restarts || []).length > 0 || (fm.uptime_sec != null && fm.uptime_sec < DBG_WIN);
+  const corr = stalls.filter(s => srvGlitch.some(g => Math.abs(s.t - g) < 25)).length;
+
+  if (h.icecast && h.icecast.ok === false) {
+    el.classList.add('bad');
+    el.textContent = '📡 Platform: the /fm.mp3 mount is missing from Icecast — the FM source is down, nothing you hear is your wifi.';
+  } else if (stalls.length && (corr || restartRecent)) {
+    el.classList.add('bad');
+    el.textContent = '📡 Platform: ' + (corr || stalls.length) + ' of your ' + stalls.length +
+      ' rebuffers line up with server-side glitches (' +
+      (restartRecent ? 'FM stream restarted ' + dbgFmtDur(fm.uptime_sec) + ' ago' : bursts + ' overflow bursts') + ').';
+  } else if (stalls.length) {
+    el.classList.add('warn');
+    el.textContent = '📶 Your connection: the player rebuffered ' + stalls.length +
+      '× in 10 min while the platform stream ran continuously — wifi/network on your end.';
+  } else if (bursts) {
+    el.classList.add('warn');
+    el.textContent = '⚠️ Platform DSP is dropping samples (' + bursts +
+      ' overflow bursts / 10 min) — heard as clicks or brief garble, not full dropouts. Your connection is clean.';
+  } else {
+    el.classList.add('good');
+    el.textContent = '✅ Clean — no rebuffers on your end, no glitches on the platform.';
+  }
+}
+
+function renderDbg() {
+  const now = Date.now() / 1000;
+  const win = e => now - e.t < DBG_WIN;
+  const stalls = dbgEvents.filter(e => win(e) && (e.type === 'stall' || e.type === 'error'));
+  const reconn = dbgEvents.filter(e => win(e) && e.type === 'reconnect');
+  $('dbg-c-stalls').textContent = String(stalls.length);
+  $('dbg-c-stalls').className = stalls.length ? 'err' : 'ok';
+  $('dbg-c-reconn').textContent = String(reconn.length);
+  let buf = null;
+  try {
+    if (audio.buffered.length) buf = audio.buffered.end(audio.buffered.length - 1) - audio.currentTime;
+  } catch (e) {}
+  $('dbg-c-buf').textContent = buf == null ? (isPlaying ? '0s' : 'not playing') : buf.toFixed(1) + 's';
+  const last = dbgEvents[dbgEvents.length - 1];
+  $('dbg-c-last').textContent = last
+    ? last.type + (last.detail ? ' (' + last.detail + ')' : '') + ' ' + dbgFmtDur(now - last.t) + ' ago' : 'none';
+  $('dbg-log').innerHTML = dbgEvents.slice(-8).map(e =>
+    new Date(e.t * 1000).toLocaleTimeString() + '  ' + e.type + (e.detail ? ' — ' + e.detail : '')).join('<br>') || 'no player events recorded yet';
+
+  const h = dbgHealth;
+  if (h && h.ok) {
+    const fm = h.fm || {}, ev = fm.events || {};
+    const up = $('dbg-s-uptime');
+    up.textContent = fm.state === 'active' ? dbgFmtDur(fm.uptime_sec) : (fm.state || '?');
+    up.className = fm.state === 'active' ? (fm.uptime_sec < DBG_WIN ? 'err' : 'ok') : 'err';
+    $('dbg-s-restarts').textContent = fm.restarts_24h != null ? String(fm.restarts_24h) : 'n/a';
+    $('dbg-s-restarts').className = fm.restarts_24h > 2 ? 'err' : '';
+    const ovf = $('dbg-s-ovf');
+    if (ev.journal_ok === false) { ovf.textContent = 'no journal access'; ovf.className = 'err'; }
+    else {
+      ovf.textContent = (ev.overflow_bursts || 0) + ' bursts / ' + (ev.overflow_samples || 0) + ' O';
+      ovf.className = ev.overflow_bursts ? 'err' : 'ok';
+    }
+    $('dbg-s-spark').textContent = ev.per_min ? dbgSpark(ev.per_min) : '–';
+    const mt = $('dbg-s-mount');
+    if (h.icecast && h.icecast.ok) {
+      mt.textContent = 'up ' + dbgFmtDur(h.icecast.mount_uptime_sec) + ' · ' + h.icecast.listeners + ' listening';
+      mt.className = 'ok';
+    } else { mt.textContent = h.icecast && h.icecast.error ? 'DOWN' : '?'; mt.className = 'err'; }
+    const sp = $('dbg-s-src');
+    if (h.source && h.source.ok) { sp.textContent = 'reachable ' + h.source.rtt_ms + 'ms'; sp.className = 'ok'; }
+    else { sp.textContent = 'unreachable'; sp.className = 'err'; }
+  }
+  dbgVerdict();
+}
+
+async function pollDbgHealth() {
+  try {
+    const t0 = Date.now() / 1000;
+    const r = await fetch('/api/stream-health');
+    dbgHealth = await r.json();
+    if (dbgHealth && dbgHealth.ts) dbgClockOfs = t0 - dbgHealth.ts;
+  } catch (e) { dbgHealth = null; }
+  renderDbg();
+}
+
+let dbgTimer2 = null;
+$('dbg-panel').addEventListener('toggle', () => {
+  clearInterval(dbgTimer); dbgTimer = null;
+  clearInterval(dbgTimer2); dbgTimer2 = null;
+  if ($('dbg-panel').open) {
+    pollDbgHealth();
+    dbgTimer = setInterval(pollDbgHealth, 10000);
+    // keep the client column (buffer depth, ages) live between health polls
+    dbgTimer2 = setInterval(renderDbg, 2000);
+  }
+});
 </script>
 </body>
 </html>

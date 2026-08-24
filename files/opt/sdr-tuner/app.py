@@ -15,6 +15,7 @@ from flask import (Flask, Response, jsonify, redirect, render_template, request,
                    send_from_directory, url_for)
 
 import station_db
+import stream_health
 import ui_settings
 
 # ---------------------------------------------------------------------------
@@ -166,6 +167,18 @@ def _dbg_capture(resp):
     except Exception:  # noqa: BLE001 — never let logging break a response
         pass
     return resp
+
+
+@app.route("/api/stream-health")
+def api_stream_health():
+    """Server-side half of the 🩺 stream-debug panel: FM service uptime +
+    IQ-overflow bursts, Icecast mount health, Pi-source reachability. The
+    GUI correlates these with player-side rebuffer events to call
+    platform-vs-listener-wifi on a dropout."""
+    try:
+        return jsonify(stream_health.collect())
+    except Exception as e:  # noqa: BLE001 — diagnostics must not 500 the UI
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/debug-log")

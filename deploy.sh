@@ -23,7 +23,8 @@ if [[ "${1:-}" == "--rack" ]]; then
   echo "Deploying APP payload to the rack (radio-compute, .84) — stream.sh + Pi-only units skipped..."
   for f in app.py station_db.py hd_stream.py rds_watcher.py fcc_fetch.py fm_scan.py \
            am_scan.py am_scan_merge.py am_scan_all.sh am_stream.py am_diag_scan.py \
-           caption_orchestrator.py ui_settings.py wbfm_stream.py stereo_decode.py; do
+           caption_orchestrator.py ui_settings.py wbfm_stream.py stereo_decode.py \
+           stream_health.py; do
     install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/$f" "/opt/sdr-tuner/$f"
   done
   install -d -m 0755 -o radio -g radio /opt/sdr-tuner/templates
@@ -55,6 +56,7 @@ install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/am_stream.py"           /o
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/am_diag_scan.py"        /opt/sdr-tuner/am_diag_scan.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/caption_orchestrator.py" /opt/sdr-tuner/caption_orchestrator.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/ui_settings.py"         /opt/sdr-tuner/ui_settings.py
+install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/stream_health.py"       /opt/sdr-tuner/stream_health.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_predict.py"       /opt/sdr-tuner/wxsat_predict.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_scheduler.py"     /opt/sdr-tuner/wxsat_scheduler.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/wxsat_live.py"          /opt/sdr-tuner/wxsat_live.py
