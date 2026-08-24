@@ -42,7 +42,18 @@ Device + tune come from the stream env files (same contract as stream.sh):
   /etc/radio-compute/source-dx-r2.env  SOAPY_ARGS (driver=remote,...,remote:driver=sdrplay)
 The SoapyRemote IQ transport is forced to TCP via the setupStream args.
 
-numpy-only (no scipy), to match am_stream.py / stereo_decode.py runtime.
+CPU (2026-08-24): the demod must hold a sustained 2 Msps in Python; the original
+build burned ~95% of a core and tipped into IQ overflows (audible clicks) under
+daytime host contention. Three fixes cut it to a fraction:
+  1. ACCUMULATE reads — SoapyRemote delivers ~1006-sample datagrams; running the
+     DSP per datagram doubled the cost in per-call overhead (same lesson as the
+     scanner's monitor_stream). Reads are now batched to PROC_SAMPLES per block.
+  2. int16->complex64 via one astype + view, with NO /32768 normalization — the
+     discriminator's angle() is scale-invariant, so normalization was pure waste.
+  3. FIRs run via scipy fftconvolve when scipy is present (~30%+ cheaper than
+     the strided-matmul path, which numpy must copy contiguous first). Falls
+     back to the numpy matmul path without scipy (Pi deploys), identical output
+     to float32 rounding (~1e-6 relative — far below the int16 output LSB).
 """
 import os
 import signal
@@ -53,6 +64,12 @@ import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 import SoapySDR
 from SoapySDR import SOAPY_SDR_CS16, SOAPY_SDR_RX
+
+try:
+    from scipy.signal import fftconvolve
+    _HAVE_SCIPY = True
+except ImportError:
+    _HAVE_SCIPY = False
 
 HW_RATE = 2_000_000                  # dx-R2 device rate — DO NOT change
 DECIM1 = 4                           # stage 1: 2.0M -> 500k intermediate (full FM)
@@ -124,11 +141,26 @@ class DecimatingFIR:
         if nwin <= 0:
             self.hist = ext[-(self.N - 1):].copy()
             return np.empty(0, dtype=self.dtype)
-        win = sliding_window_view(ext, self.N)       # (nwin, N) view, no copy
-        out = (win[self.phase::self.D] @ self.taps).astype(self.dtype)
+        if _HAVE_SCIPY:
+            # All valid-window outputs at once, then keep the decimation grid.
+            # Cheaper than the matmul path even though 3/4 are discarded: the
+            # strided-view matmul forces numpy to materialise an (nwin/D, N)
+            # contiguous copy (~800 MB/s at 2 Msps) before BLAS ever runs.
+            full = fftconvolve(ext, self.taps, mode="valid")
+            out = full[self.phase::self.D].astype(self.dtype)
+        else:
+            win = sliding_window_view(ext, self.N)   # (nwin, N) view, no copy
+            out = (win[self.phase::self.D] @ self.taps).astype(self.dtype)
         self.phase = (self.phase - nwin) % self.D    # carry decimation phase
         self.hist = ext[-(self.N - 1):].copy()
         return out
+
+
+def cs16_to_complex(raw: np.ndarray, n: int) -> np.ndarray:
+    """Interleaved CS16 -> complex64 in ONE pass (astype then reinterpret pairs).
+    Deliberately unnormalized (|I|,|Q| up to 32767): the discriminator's angle()
+    is scale-invariant, so the old /32768 bought nothing but another array pass."""
+    return raw[:2 * n].astype(np.float32).view(np.complex64)
 
 
 def main() -> int:
@@ -177,7 +209,15 @@ def main() -> int:
     disc_scale = np.float32(32767.0 / (np.pi * DECIM1))
 
     chunk = 1 << 16                                   # 65536 complex samples/read
+    # SoapyRemote hands back ~1006 samples per readStream (one datagram) no
+    # matter how much is asked for. Running the DSP per datagram doubles the CPU
+    # in per-call overhead, so batch reads to PROC_SAMPLES (~33 ms) first. The
+    # ~44 MB TCP stream window buffers seconds of IQ, so the DSP burst between
+    # reads costs nothing.
+    proc_samples = 1 << 16                            # DSP block (~33 ms @ 2 Msps)
     raw = np.empty(2 * chunk, np.int16)              # CS16 interleaved I,Q
+    parts: list[np.ndarray] = []                      # accumulated CS16 reads
+    pending = 0                                       # complex samples in parts
     prev = np.complex64(0)                            # discriminator continuity (IF domain)
     stdout = sys.stdout.buffer
 
@@ -195,10 +235,15 @@ def main() -> int:
         n = sr.ret
         if n <= 0:
             continue                                  # overflow/timeout: skip (rare on TCP)
+        parts.append(raw[:2 * n].copy())              # raw is reused next read
+        pending += n
+        if pending < proc_samples:
+            continue
 
-        i = raw[0:2 * n:2].astype(np.float32)
-        q = raw[1:2 * n:2].astype(np.float32)
-        iq = ((i + 1j * q) / np.float32(32768.0)).astype(np.complex64)
+        data = np.concatenate(parts)
+        parts.clear()
+        pending = 0
+        iq = cs16_to_complex(data, data.shape[0] // 2)
 
         # Stage 1: channel-select + decimate to the 500k IF (isolate the tuned
         # station at DC; reject neighbours so the discriminator can't capture them).
