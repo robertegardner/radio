@@ -319,7 +319,7 @@ async function refreshStatus() {
     const sat = (s.capturing_pass && s.capturing_pass.satellite) || '';
     const when = escapeHTML(passWhen(s.capturing_pass));
     nextPass = s.next_pass || null;
-    if (s.tuner === 'capturing')      txt.innerHTML = `<b>Capturing ${escapeHTML(sat)}</b>${when} — recording on goes.srvr`;
+    if (s.tuner === 'capturing')      txt.innerHTML = `<b>Capturing ${escapeHTML(sat)}</b>${when} — recording on poolpi.srvr`;
     else if (s.tuner === 'decoding')  txt.innerHTML = `<b>Decoding ${escapeHTML(sat)}</b>${when} — SatDump on the rack`;
     else                              renderIdlePill();
 

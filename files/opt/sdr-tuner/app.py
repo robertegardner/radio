@@ -1320,14 +1320,13 @@ def api_wxsat_passes():
     return jsonify(data)
 
 
-# Downtime-survey feed: wxsat-downtime.service on the GOES Pi surveys the
-# 137 MHz chain between Meteor passes (ORBCOMM Doppler tracks, RFI carriers,
-# Sawbird floor trend) and writes downtime.json next to the capture store,
-# served by the Pi's static :8078. Proxied here so the HTTPS /wxsat page has
-# a same-origin source; the 30 s cache keeps page polls off the Garage-UDB
-# wireless bridge.
+# Downtime-survey feed: wxsat-downtime.service on the Meteor Pi (poolpi)
+# surveys the 137 MHz chain between Meteor passes (ORBCOMM Doppler tracks, RFI
+# carriers, Sawbird floor trend) and writes downtime.json next to the capture
+# store, served by the Pi's static :8078. Proxied here (30 s cache) so the
+# HTTPS /wxsat page has a same-origin source.
 WXSAT_DOWNTIME_URL = os.environ.get("WXSAT_DOWNTIME_URL",
-                                    "http://goes.srvr:8078/downtime.json")
+                                    "http://poolpi.srvr:8078/downtime.json")
 _downtime_cache = {"t": 0.0, "doc": None}
 
 
@@ -1348,13 +1347,13 @@ def api_wxsat_downtime():
     return jsonify(doc)
 
 
-# ORBCOMM decode feed: wxsat-orbcomm.service on the GOES Pi records OG2 passes
-# near TCA (rtl_tcp client, gated like the survey), sweep-decodes the channel
-# plan with `satdump orbcomm_stx`, and writes orbcomm.json to the Pi's static
-# :8078. Proxied here (30 s cache) so the HTTPS /wxsat page has a same-origin
-# source.
+# ORBCOMM decode feed: wxsat-orbcomm.service on the Meteor Pi (poolpi) records
+# OG2 passes near TCA (rtl_tcp client, gated like the survey), sweep-decodes
+# the channel plan with `satdump orbcomm_stx`, and writes orbcomm.json to the
+# Pi's static :8078. Proxied here (30 s cache) so the HTTPS /wxsat page has a
+# same-origin source.
 WXSAT_ORBCOMM_URL = os.environ.get("WXSAT_ORBCOMM_URL",
-                                   "http://goes.srvr:8078/orbcomm.json")
+                                   "http://poolpi.srvr:8078/orbcomm.json")
 _orbcomm_cache = {"t": 0.0, "doc": None}
 
 
@@ -1378,7 +1377,7 @@ def api_wxsat_orbcomm():
 @app.route("/api/wxsat/status")
 def api_wxsat_status():
     """Scheduler state + next pass, for the /wxsat indicator. The Meteor dongle
-    is DEDICATED (goes.srvr) — nothing here touches or reflects the FM radio.
+    is DEDICATED (poolpi.srvr) — nothing here touches or reflects the FM radio.
     The status file (mirrored from the Pi by the platform's live relay) carries
     phase="decoding" while the rack SatDump runs."""
     st       = _load_json(WXSAT_STATUS_PATH) or {}
