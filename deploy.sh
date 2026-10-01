@@ -23,7 +23,7 @@ if [[ "${1:-}" == "--rack" ]]; then
   echo "Deploying APP payload to the rack (radio-compute, .84) — stream.sh + Pi-only units skipped..."
   for f in app.py station_db.py hd_stream.py rds_watcher.py fcc_fetch.py fm_scan.py \
            am_scan.py am_scan_merge.py am_scan_all.sh am_stream.py am_diag_scan.py \
-           caption_orchestrator.py ui_settings.py wbfm_stream.py stereo_decode.py; do
+           caption_orchestrator.py ui_settings.py wbfm_stream.py stereo_decode.py authz.py; do
     install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/$f" "/opt/sdr-tuner/$f"
   done
   install -d -m 0755 -o radio -g radio /opt/sdr-tuner/templates
@@ -49,6 +49,7 @@ install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/station_db.py"          /o
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/hd_stream.py"           /opt/sdr-tuner/hd_stream.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/rds_watcher.py"         /opt/sdr-tuner/rds_watcher.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/fcc_fetch.py"           /opt/sdr-tuner/fcc_fetch.py
+install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/authz.py"               /opt/sdr-tuner/authz.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/fm_scan.py"             /opt/sdr-tuner/fm_scan.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/am_scan.py"             /opt/sdr-tuner/am_scan.py
 install -m 0755 -o radio -g radio "$SRC/opt/sdr-tuner/am_stream.py"           /opt/sdr-tuner/am_stream.py
