@@ -14,6 +14,7 @@ import requests
 from flask import (Flask, Response, jsonify, redirect, render_template, request,
                    send_from_directory, url_for)
 
+import authz
 import station_db
 import ui_settings
 
@@ -141,10 +142,25 @@ def debug_event(comp, action, detail="", status=""):
 app = Flask(__name__)
 
 
+@app.before_request
+def _authz_write_guard():
+    """Off-LAN writes need homelab-admin (platform spec 2026-10-01). Registered
+    FIRST so it also covers the /api/wxsat and /api/scanner proxies."""
+    if authz.is_forbidden_write(request.method, request.headers):
+        return jsonify({"ok": False, "error": "admin required"}), 403
+    return None
+
+
+@app.route("/api/whoami")
+def api_whoami():
+    return jsonify(authz.auth_context(request.headers))
+
+
 # Skip the high-frequency poll GETs so the debug feed shows commands, not noise.
 _DBG_SKIP = {"/api/status", "/api/now_playing", "/api/stack-state", "/api/debug-log",
              "/api/scan_status", "/api/rfi_status", "/api/art", "/api/scanner/status",
-             "/api/scanner/r2/state", "/", "/dash", "/radio", "/wxsat", "/multi"}
+             "/api/scanner/r2/state", "/", "/dash", "/radio", "/wxsat", "/multi",
+             "/api/whoami"}
 
 
 @app.after_request
