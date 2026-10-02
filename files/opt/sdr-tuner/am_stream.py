@@ -39,6 +39,17 @@ import numpy as np
 import SoapySDR
 from SoapySDR import SOAPY_SDR_CS16, SOAPY_SDR_RX
 
+# SOAPY_SDR_STREAM_ERROR: the remote stream is dead (Pi source reset). Calling
+# readStream again after this can spin forever INSIDE SoapyRemote's C++ client
+# (platform 2026-10-02 repro) - exit now so systemd restarts us fresh.
+STREAM_ERROR = -2
+
+
+def _stream_dead(who):
+    sys.stderr.write(f"{who}: readStream STREAM_ERROR - remote stream dead, exiting\n")
+    sys.stderr.flush()
+    sys.exit(1)
+
 RFI_STATUS_PATH = Path("/run/sdr-streams/rfi_status.json")
 SRC_ENV = Path("/etc/radio-compute/source-dx-r2.env")
 
@@ -195,6 +206,8 @@ def startup_rfi_scan(sdr, rx, lo_freq_hz: float, target_freq_hz: float,
     acc = np.empty(0, dtype=np.complex64)
     while time.monotonic() < deadline:
         sr = sdr.readStream(rx, [raw], read_block, timeoutUs=500_000)
+        if sr.ret == STREAM_ERROR:
+            _stream_dead("am_stream")
         if sr.ret <= 0:
             continue
         n = sr.ret
@@ -441,6 +454,8 @@ def main() -> int:
 
     while running:
         sr = sdr.readStream(rx, [raw], BLOCK_COMPLEX, timeoutUs=200_000)
+        if sr.ret == STREAM_ERROR:
+            _stream_dead("am_stream")
         if sr.ret <= 0:
             continue
         n = sr.ret
