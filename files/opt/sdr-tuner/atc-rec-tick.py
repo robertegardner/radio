@@ -58,11 +58,15 @@ def stop_recording():
     subprocess.run(["sudo", "systemctl", "stop", "atc-record.service"], check=False)
 
 
-def r2(mode, freq=None):
-    """Drive the R2-mode coordinator through the radio app's scanner gateway."""
+def r2(mode, freq=None, hold_until=None):
+    """Drive the R2-mode coordinator through the radio app's scanner gateway.
+    hold_until (epoch) keeps the discone's 30-min auto-return to P25 away until
+    the recording window ends."""
     body = {"mode": mode}
     if freq:
         body.update({"freq": f"{freq}M", "audio_mode": "am"})
+    if hold_until:
+        body["hold_until"] = hold_until
     try:
         req = urllib.request.Request(
             f"{RADIO_API}/api/scanner/r2/mode", data=json.dumps(body).encode(),
@@ -117,7 +121,7 @@ def main():
                 stop_recording()
                 finalize(jobs, cur_id, now)
             log(f"START {want['id']} {want['label']} {want['freq']} MHz")
-            r2("atc", want["freq"])              # preempt the R2 onto ATC
+            r2("atc", want["freq"], hold_until=want["end"])   # preempt + hold for the window
             time.sleep(8)                        # let the source bounce + retune settle
             start_recording(want)
             want["status"] = "recording"
@@ -129,7 +133,7 @@ def main():
             stop_recording()
             finalize(jobs, cur_id, now)
         if state.get("tuned"):
-            r2("noaa")                           # back to the 24/7 default
+            r2("p25")                            # back to the discone default (P25)
         state = {}
 
     for j in jobs:                               # window passed, never recorded
