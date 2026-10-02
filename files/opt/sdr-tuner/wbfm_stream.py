@@ -54,6 +54,17 @@ from numpy.lib.stride_tricks import sliding_window_view
 import SoapySDR
 from SoapySDR import SOAPY_SDR_CS16, SOAPY_SDR_RX
 
+# SOAPY_SDR_STREAM_ERROR: the remote stream is dead (Pi source reset). Calling
+# readStream again after this can spin forever INSIDE SoapyRemote's C++ client
+# (platform 2026-10-02 repro) - exit now so systemd restarts us fresh.
+STREAM_ERROR = -2
+
+
+def _stream_dead(who):
+    sys.stderr.write(f"{who}: readStream STREAM_ERROR - remote stream dead, exiting\n")
+    sys.stderr.flush()
+    sys.exit(1)
+
 HW_RATE = 2_000_000                  # dx-R2 device rate — DO NOT change
 DECIM1 = 4                           # stage 1: 2.0M -> 500k intermediate (full FM)
 IF_RATE = HW_RATE // DECIM1          # 500_000 — discriminator runs here
@@ -192,6 +203,8 @@ def main() -> int:
 
     while running:
         sr = dev.readStream(st, [raw], chunk, timeoutUs=1_000_000)
+        if sr.ret == STREAM_ERROR:
+            _stream_dead("wbfm_stream")
         n = sr.ret
         if n <= 0:
             continue                                  # overflow/timeout: skip (rare on TCP)
