@@ -16,7 +16,16 @@ state = {
     "freq_mhz": os.environ.get("FREQ", "").rstrip("M"),
     "started_at": time.time(),
     "last_update": time.time(),
+    # Heartbeat: last time ANY RDS group decoded (null = none this session).
+    # platform fm-watch reads it - a frequency that carries RDS but has decoded
+    # none for minutes is a noise stream (degraded Pi source, 2026-10-05) and
+    # gets the ordered source bounce. Content fields above only change on
+    # change, so this is the only liveness signal for a steady station.
+    "rds_seen": None,
 }
+# Throttle heartbeat-only rewrites (content changes still write immediately).
+RDS_SEEN_WRITE_SEC = float(os.environ.get("RDS_SEEN_WRITE_SEC", "10"))
+last_write = 0.0
 
 # RadioText arrives in segments, so a song change briefly shows a half-assembled
 # or scrolling frame ("Metallica - Nothi") before it settles. Require a new RT
@@ -27,7 +36,8 @@ pending_rt = {"text": None, "since": 0.0}
 
 
 def write_state():
-    state["last_update"] = time.time()
+    global last_write
+    state["last_update"] = last_write = time.time()
     tmp = OUT.with_suffix(".tmp")
     tmp.write_text(json.dumps(state))
     tmp.replace(OUT)
@@ -97,6 +107,12 @@ for line in sys.stdin:
         continue
 
     changed = False
+    if rec.get("pi"):
+        # redsea only emits CRC-valid groups, so a PI means real RDS.
+        first = state["rds_seen"] is None
+        state["rds_seen"] = time.time()
+        if first or state["rds_seen"] - last_write >= RDS_SEEN_WRITE_SEC:
+            changed = True
     for k in ("pi", "ps", "prog_type"):
         v = rec.get(k)
         if v and state.get(k) != v:
